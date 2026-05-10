@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import {
   hasSupabaseAuthConfig,
   hasSupabaseConfig,
+  resolveSupabaseApiUrl,
   type AppEnv,
 } from '../config/env.js';
 import type { Database } from '../types/database.js';
@@ -14,7 +15,7 @@ export function createSupabaseClient(env: AppEnv): SupabaseClient<Database> | nu
     return null;
   }
 
-  return createClient<Database>(env.SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!, {
+  return createClient<Database>(resolveSupabaseApiUrl(env)!, env.SUPABASE_SERVICE_ROLE_KEY!, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
@@ -29,7 +30,7 @@ export function createSupabaseAuthClient(
     return null;
   }
 
-  return createClient<Database>(env.SUPABASE_URL!, env.SUPABASE_ANON_KEY!, {
+  return createClient<Database>(resolveSupabaseApiUrl(env)!, env.SUPABASE_ANON_KEY!, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,

@@ -5,7 +5,7 @@ Zod et Supabase.
 
 ## Role du backend
 
-Ce service applique la strategie de `moviesmatchapp/BACKEND_STRATEGY.md`:
+Ce service applique la strategie suivante :
 
 - exposer une API stable pour Flutter;
 - garder la cle service Supabase cote serveur;
@@ -35,11 +35,16 @@ Renseigner dans `.env`:
 
 ```bash
 SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_API_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 ```
 
 La cle `service_role` ne doit jamais etre ajoutee dans l'application Flutter.
+
+Si `SUPABASE_URL` contient une URL Postgres utilisee pour les migrations, le
+backend essaie de deduire l'URL API Supabase depuis la reference projet. Tu peux
+aussi la fournir explicitement avec `SUPABASE_API_URL`.
 
 ## Base de donnees
 
@@ -126,3 +131,22 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+## Deploiement Vercel
+
+Le backend Fastify est expose a Vercel via `api/index.js`, qui charge le handler
+compile `dist/vercel.js`. Le fichier `vercel.json` redirige toutes les routes
+vers cette fonction unique.
+
+Dans les settings Vercel:
+
+- Root Directory: `moviesmatchback`
+- Build Command: laisse Vercel utiliser `npm run build` depuis `vercel.json`
+- Environment Variables:
+  - `SUPABASE_URL`
+  - `SUPABASE_ANON_KEY`
+  - `SUPABASE_SERVICE_ROLE_KEY`
+  - `SUPABASE_API_URL` si `SUPABASE_URL` n'est pas l'URL API HTTPS
+
+Les routes comme `/health`, `/v1/auth/signup` et `/v1/titles` doivent rester
+appelees sans prefixe `/api`.

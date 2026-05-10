@@ -4,8 +4,8 @@ const app = await buildApp();
 
 try {
   await app.listen({
-    host: app.config.HOST,
-    port: app.config.PORT,
+    host: app.config.APP_HOST,
+    port: app.config.APP_PORT,
   });
 } catch (error) {
   app.log.error(error);
