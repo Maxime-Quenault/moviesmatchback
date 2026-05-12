@@ -24,6 +24,7 @@ export interface TitleDto {
 
 export interface ListTitlesInput {
   type?: TitleType;
+  genre?: string;
   q?: string;
   limit: number;
   offset: number;
@@ -61,6 +62,10 @@ export async function listTitles(
 
   if (input.q) {
     query = query.ilike('name', `%${input.q}%`);
+  }
+
+  if (input.genre) {
+    query = query.contains('genres', [input.genre]);
   }
 
   const { data, error, count } = await query

@@ -38,6 +38,8 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_API_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+TMDB_ACCESS_TOKEN=your-tmdb-read-access-token
+CATALOG_SYNC_TOKEN=change-me
 ```
 
 La cle `service_role` ne doit jamais etre ajoutee dans l'application Flutter.
@@ -45,6 +47,14 @@ La cle `service_role` ne doit jamais etre ajoutee dans l'application Flutter.
 Si `SUPABASE_URL` contient une URL Postgres utilisee pour les migrations, le
 backend essaie de deduire l'URL API Supabase depuis la reference projet. Tu peux
 aussi la fournir explicitement avec `SUPABASE_API_URL`.
+
+Pour enrichir le catalogue depuis les APIs externes:
+
+- TMDB sert aux films et series;
+- Jikan sert aux animes;
+- `TMDB_ACCESS_TOKEN` est recommande, `TMDB_API_KEY` reste accepte;
+- `CATALOG_SYNC_TOKEN` protege la route d'import. Il est optionnel en
+  developpement, mais requis en production.
 
 ## Base de donnees
 
@@ -88,7 +98,9 @@ Public:
 - `POST /v1/auth/signin`
 - `POST /v1/auth/refresh`
 - `GET /v1/titles`
+- `GET /v1/titles?type=movie&genre=Action`
 - `GET /v1/titles/:id`
+- `GET /v1/titles/external-genres?type=movie`
 - `GET /v1/community/lists`
 - `GET /v1/community/lists/:listId`
 - `GET /v1/community/profiles/:profileId`
@@ -114,6 +126,31 @@ Authentifies avec `Authorization: Bearer <supabase_access_token>`:
 - `GET /v1/me/follows`
 - `POST /v1/me/follows/:profileId`
 - `DELETE /v1/me/follows/:profileId`
+
+Catalogue externe:
+
+- `POST /v1/titles/sync`
+
+Exemple d'import par genre:
+
+```bash
+curl -X POST http://localhost:3000/v1/titles/sync \
+  -H "Content-Type: application/json" \
+  -H "x-catalog-sync-token: $CATALOG_SYNC_TOKEN" \
+  -d "{\"type\":\"movie\",\"genreName\":\"Action\",\"pages\":1,\"limit\":20}"
+```
+
+Exemple pour plusieurs types:
+
+```bash
+curl -X POST http://localhost:3000/v1/titles/sync \
+  -H "Content-Type: application/json" \
+  -H "x-catalog-sync-token: $CATALOG_SYNC_TOKEN" \
+  -d "{\"genreNames\":{\"movie\":[\"Action\"],\"series\":[\"Drame\"],\"anime\":[\"Adventure\"]},\"pages\":1,\"limit\":20}"
+```
+
+Pour importer tous les genres officiels, passer `{"allGenres":true}` avec
+prudence: cela declenche beaucoup d'appels externes.
 
 Exemple d'action:
 

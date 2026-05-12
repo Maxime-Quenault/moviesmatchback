@@ -14,6 +14,13 @@ const envSchema = z.object({
   SUPABASE_API_URL: z.string().url().optional(),
   SUPABASE_ANON_KEY: z.string().min(1).optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  TMDB_ACCESS_TOKEN: z.string().min(1).optional(),
+  TMDB_API_KEY: z.string().min(1).optional(),
+  TMDB_BASE_URL: z.string().url().default('https://api.themoviedb.org/3'),
+  TMDB_IMAGE_BASE_URL: z.string().url().default('https://image.tmdb.org/t/p/w500'),
+  TMDB_LANGUAGE: z.string().min(2).default('fr-FR'),
+  JIKAN_BASE_URL: z.string().url().default('https://api.jikan.moe/v4'),
+  CATALOG_SYNC_TOKEN: z.string().min(1).optional(),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
@@ -32,6 +39,10 @@ export function hasSupabaseAuthConfig(env: AppEnv): boolean {
       env.SUPABASE_ANON_KEY &&
       env.SUPABASE_SERVICE_ROLE_KEY,
   );
+}
+
+export function hasTmdbConfig(env: AppEnv): boolean {
+  return Boolean(env.TMDB_ACCESS_TOKEN || env.TMDB_API_KEY);
 }
 
 export function resolveSupabaseApiUrl(env: AppEnv): string | undefined {

@@ -34,3 +34,11 @@ export function notFound(message = 'Resource not found'): ApiError {
 export function serviceUnavailable(message = 'Backend storage is not configured'): ApiError {
   return new ApiError(503, 'SUPABASE_NOT_CONFIGURED', message);
 }
+
+export function configurationError(message: string, details?: unknown): ApiError {
+  return new ApiError(503, 'CONFIGURATION_ERROR', message, details);
+}
+
+export function upstreamError(message: string, details?: unknown): ApiError {
+  return new ApiError(502, 'UPSTREAM_SERVICE_ERROR', message, details);
+}
