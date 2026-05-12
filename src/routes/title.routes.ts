@@ -8,6 +8,7 @@ import {
   listExternalGenres,
   syncExternalCatalog,
 } from '../services/catalog-sync.service.js';
+import { discoverTmdbTitles } from '../services/tmdb-discovery.service.js';
 import { getTitleById, listTitles } from '../services/title.service.js';
 
 const listTitlesQuerySchema = paginationSchema.extend({
@@ -19,6 +20,14 @@ const listTitlesQuerySchema = paginationSchema.extend({
 const externalGenresQuerySchema = z.object({
   type: titleTypeSchema,
   language: z.string().trim().min(2).optional(),
+});
+
+const tmdbDiscoverQuerySchema = z.object({
+  type: z.enum(['movie', 'series']),
+  page: z.coerce.number().int().min(1).max(500).optional(),
+  limit: z.coerce.number().int().min(1).max(30).default(20),
+  language: z.string().trim().min(2).optional(),
+  genreId: z.coerce.number().int().positive().optional(),
 });
 
 const genreIdsByTypeSchema = z.object({
@@ -73,6 +82,14 @@ export const titleRoutes: FastifyPluginAsync = async (app) => {
 
     return {
       items: await listExternalGenres(app.config, query.type, query.language),
+    };
+  });
+
+  app.get('/discover', async (request) => {
+    const query = tmdbDiscoverQuerySchema.parse(request.query);
+
+    return {
+      items: await discoverTmdbTitles(app.config, query),
     };
   });
 

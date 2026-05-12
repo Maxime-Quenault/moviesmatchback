@@ -52,9 +52,36 @@ export async function listTitles(
   supabase: SupabaseClient<Database>,
   input: ListTitlesInput,
 ): Promise<{ items: TitleDto[]; count: number | null }> {
-  let query = supabase
+  let countQuery = supabase
     .from('titles_with_genres')
-    .select('*', { count: 'exact' });
+    .select('id', { count: 'exact', head: true });
+
+  if (input.type) {
+    countQuery = countQuery.eq('type', input.type);
+  }
+
+  if (input.q) {
+    countQuery = countQuery.ilike('name', `%${input.q}%`);
+  }
+
+  if (input.genre) {
+    countQuery = countQuery.contains('genres', [input.genre]);
+  }
+
+  const { error: countError, count } = await countQuery;
+
+  if (countError) {
+    throwDatabaseError(countError, 'Unable to count titles');
+  }
+
+  if (count !== null && input.offset >= count) {
+    return {
+      items: [],
+      count,
+    };
+  }
+
+  let query = supabase.from('titles_with_genres').select('*');
 
   if (input.type) {
     query = query.eq('type', input.type);
@@ -68,7 +95,7 @@ export async function listTitles(
     query = query.contains('genres', [input.genre]);
   }
 
-  const { data, error, count } = await query
+  const { data, error } = await query
     .order('name', { ascending: true })
     .range(input.offset, input.offset + input.limit - 1);
 

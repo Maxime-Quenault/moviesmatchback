@@ -100,6 +100,7 @@ Public:
 - `GET /v1/titles`
 - `GET /v1/titles?type=movie&genre=Action`
 - `GET /v1/titles/:id`
+- `GET /v1/titles/discover?type=movie&limit=20`
 - `GET /v1/titles/external-genres?type=movie`
 - `GET /v1/community/lists`
 - `GET /v1/community/lists/:listId`
@@ -129,6 +130,8 @@ Authentifies avec `Authorization: Bearer <supabase_access_token>`:
 
 Catalogue externe:
 
+- `GET /v1/titles/discover` recupere les films et series en direct depuis TMDB,
+  sans lecture Supabase. C'est l'endpoint a utiliser pour la decouverte live.
 - `POST /v1/titles/sync`
 
 Exemple d'import par genre:
