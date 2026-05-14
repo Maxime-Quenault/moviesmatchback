@@ -13,6 +13,7 @@ function title(input: Partial<TitleDto> & Pick<TitleDto, 'id' | 'genres'>): Titl
     duration: input.duration ?? null,
     posterUrl: input.posterUrl ?? null,
     rating: input.rating ?? 0,
+    seenPercentage: input.seenPercentage ?? null,
     externalSource: input.externalSource ?? null,
     externalId: input.externalId ?? null,
     genres: input.genres,

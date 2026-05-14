@@ -15,6 +15,7 @@ export interface TitleDto {
   duration: string | null;
   posterUrl: string | null;
   rating: number | null;
+  seenPercentage: number | null;
   externalSource: string | null;
   externalId: string | null;
   genres: string[];
@@ -30,7 +31,10 @@ export interface ListTitlesInput {
   offset: number;
 }
 
-export function mapTitle(row: TitleViewRow): TitleDto {
+export function mapTitle(
+  row: TitleViewRow,
+  seenPercentage: number | null = null,
+): TitleDto {
   return {
     id: row.id,
     type: row.type,
@@ -40,6 +44,7 @@ export function mapTitle(row: TitleViewRow): TitleDto {
     duration: row.duration,
     posterUrl: row.poster_url,
     rating: row.rating,
+    seenPercentage,
     externalSource: row.external_source,
     externalId: row.external_id,
     genres: Array.isArray(row.genres) ? row.genres : [],
@@ -104,7 +109,7 @@ export async function listTitles(
   }
 
   return {
-    items: (data ?? []).map(mapTitle),
+    items: await attachSeenPercentages(supabase, (data ?? []).map(mapTitle)),
     count,
   };
 }
@@ -125,7 +130,7 @@ export async function listAllTitles(
     throwDatabaseError(error, 'Unable to list titles');
   }
 
-  return (data ?? []).map(mapTitle);
+  return attachSeenPercentages(supabase, (data ?? []).map(mapTitle));
 }
 
 export async function getTitleById(
@@ -146,7 +151,9 @@ export async function getTitleById(
     throw notFound('Title not found');
   }
 
-  return mapTitle(data);
+  const [title] = await attachSeenPercentages(supabase, [mapTitle(data)]);
+
+  return title;
 }
 
 export async function getTitlesByIds(
@@ -166,8 +173,57 @@ export async function getTitlesByIds(
     throwDatabaseError(error, 'Unable to load titles');
   }
 
-  const byId = new Map((data ?? []).map((row) => [row.id, mapTitle(row)]));
+  const titles = await attachSeenPercentages(supabase, (data ?? []).map(mapTitle));
+  const byId = new Map(titles.map((title) => [title.id, title]));
   return ids.map((id) => byId.get(id)).filter((title): title is TitleDto => Boolean(title));
+}
+
+async function attachSeenPercentages(
+  supabase: SupabaseClient<Database>,
+  titles: TitleDto[],
+): Promise<TitleDto[]> {
+  if (titles.length === 0) {
+    return titles;
+  }
+
+  const { count: profileCount, error: profileError } = await supabase
+    .from('profiles')
+    .select('id', { count: 'exact', head: true });
+
+  if (profileError) {
+    throwDatabaseError(profileError, 'Unable to count profiles');
+  }
+
+  const totalProfiles = profileCount ?? 0;
+  if (totalProfiles === 0) {
+    return titles.map((title) => ({ ...title, seenPercentage: 0 }));
+  }
+
+  const ids = [...new Set(titles.map((title) => title.id))];
+  const { data, error } = await supabase
+    .from('user_title_actions')
+    .select('title_id, user_id')
+    .in('title_id', ids)
+    .in('action', ['liked', 'watched']);
+
+  if (error) {
+    throwDatabaseError(error, 'Unable to load title seen stats');
+  }
+
+  const usersByTitle = new Map<string, Set<string>>();
+  for (const row of data ?? []) {
+    const users = usersByTitle.get(row.title_id) ?? new Set<string>();
+    users.add(row.user_id);
+    usersByTitle.set(row.title_id, users);
+  }
+
+  return titles.map((title) => {
+    const seenCount = usersByTitle.get(title.id)?.size ?? 0;
+    return {
+      ...title,
+      seenPercentage: Math.round((seenCount / totalProfiles) * 100),
+    };
+  });
 }
 
 export async function ensureTitleExists(
