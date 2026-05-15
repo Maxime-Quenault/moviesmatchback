@@ -1,9 +1,19 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { SupabaseClient, User } from '@supabase/supabase-js';
 
-import { badRequest, forbidden, notFound } from '../lib/api-error.js';
+import {
+  badRequest,
+  forbidden,
+  notFound,
+  upstreamError,
+} from '../lib/api-error.js';
 import { throwDatabaseError } from '../lib/supabase-error.js';
 import type { Database, ListVisibility } from '../types/database.js';
-import { ensureTitleExists, getTitlesByIds, type TitleDto } from './title.service.js';
+import { ensureProfile } from './user.service.js';
+import {
+  ensureTitleExists,
+  getTitlesByIds,
+  type TitleDto,
+} from './title.service.js';
 
 type ListRow = Database['public']['Tables']['user_lists']['Row'];
 type ListItemRow = Database['public']['Tables']['user_list_items']['Row'];
@@ -383,6 +393,56 @@ export async function followProfile(
   }
 }
 
+async function findAuthUserByEmail(
+  supabase: SupabaseClient<Database>,
+  email: string,
+): Promise<User | null> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const perPage = 1000;
+
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await supabase.auth.admin.listUsers({
+      page,
+      perPage,
+    });
+
+    if (error) {
+      throw upstreamError('Unable to search account by email');
+    }
+
+    const found = data.users.find(
+      (user) => user.email?.trim().toLowerCase() === normalizedEmail,
+    );
+    if (found) {
+      return found;
+    }
+
+    if (data.users.length < perPage) {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+export async function followProfileByEmail(
+  supabase: SupabaseClient<Database>,
+  followerId: string,
+  email: string,
+): Promise<void> {
+  const user = await findAuthUserByEmail(supabase, email);
+
+  if (!user) {
+    throw notFound('Aucun compte trouve pour cette adresse mail');
+  }
+
+  await ensureProfile(supabase, {
+    id: user.id,
+    email: user.email ?? email,
+  });
+  await followProfile(supabase, followerId, user.id);
+}
+
 export async function unfollowProfile(
   supabase: SupabaseClient<Database>,
   followerId: string,
@@ -430,7 +490,10 @@ export async function listFollowing(
   const profilesById = new Map(
     (profiles ?? []).map((profile) => [
       profile.id,
-      profile as Pick<ProfileRow, 'id' | 'username' | 'display_name' | 'avatar_url'>,
+      profile as Pick<
+        ProfileRow,
+        'id' | 'username' | 'display_name' | 'avatar_url'
+      >,
     ]),
   );
 

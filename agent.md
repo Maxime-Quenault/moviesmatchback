@@ -88,6 +88,7 @@ Routes publiques:
 - `GET /v1/community/lists`
 - `GET /v1/community/lists/:listId`
 - `GET /v1/community/profiles/:profileId`
+- `GET /v1/community/profiles/:profileId/selections`
 
 Routes authentifiees avec `Authorization: Bearer <access_token>`:
 
@@ -104,7 +105,8 @@ Routes authentifiees avec `Authorization: Bearer <access_token>`:
 - `GET /v1/me/recommendations`
 - `PUT|DELETE /v1/me/titles/:titleId/action`
 - CRUD listes: `/v1/me/lists` et `/v1/me/lists/:listId/items`
-- Follows: `/v1/me/follows`, `/v1/me/follows/:profileId`
+- Follows: `/v1/me/follows`, `/v1/me/follows/by-email`,
+  `/v1/me/follows/:profileId`
 
 Route d'import catalogue:
 

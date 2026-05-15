@@ -66,6 +66,18 @@ export interface SelectionsDto {
   };
 }
 
+type ShareableTitleDto = TitleDto | ResolvedMediaTitleDto;
+
+export interface ShareableSelectionsDto {
+  liked: ShareableTitleDto[];
+  toWatch: ShareableTitleDto[];
+  totals: {
+    liked: number;
+    toWatch: number;
+    total: number;
+  };
+}
+
 export interface ProfileDto {
   id: string;
   username: string | null;
@@ -388,6 +400,57 @@ export async function getSelections(
       selections.toWatch.length +
       selections.rejected.length +
       selections.watched.length,
+  };
+
+  return selections;
+}
+
+export async function getShareableSelections(
+  supabase: SupabaseClient<Database>,
+  env: AppEnv,
+  userId: string,
+): Promise<ShareableSelectionsDto> {
+  const actions = (await getUserActions(supabase, userId)).filter(
+    (action) => action.action === 'liked' || action.action === 'to_watch',
+  );
+  const actionKeys = actions.map((action) => action.title_id);
+  const [resolvedTitles, localTitles] = await Promise.all([
+    resolveMediaKeys(env, actionKeys),
+    getTitlesByIds(supabase, actionKeys),
+  ]);
+  const localTitleById = new Map(localTitles.map((title) => [title.id, title]));
+
+  const selections: ShareableSelectionsDto = {
+    liked: [],
+    toWatch: [],
+    totals: {
+      liked: 0,
+      toWatch: 0,
+      total: 0,
+    },
+  };
+
+  for (const action of actions) {
+    const title =
+      resolvedTitles.get(action.title_id) ??
+      localTitleById.get(action.title_id) ??
+      null;
+
+    if (!title) {
+      continue;
+    }
+
+    if (action.action === 'liked') {
+      selections.liked.push(title);
+    } else {
+      selections.toWatch.push(title);
+    }
+  }
+
+  selections.totals = {
+    liked: selections.liked.length,
+    toWatch: selections.toWatch.length,
+    total: selections.liked.length + selections.toWatch.length,
   };
 
   return selections;

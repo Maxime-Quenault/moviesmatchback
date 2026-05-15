@@ -17,6 +17,7 @@ import {
   addListItem,
   createList,
   deleteList,
+  followProfileByEmail,
   followProfile,
   listFollowing,
   listOwnLists,
@@ -136,6 +137,10 @@ const updateListBodySchema = createListBodySchema.partial();
 const addListItemBodySchema = z.object({
   titleId: z.string().min(1),
   position: z.number().int().min(0).optional(),
+});
+
+const followByEmailBodySchema = z.object({
+  email: z.string().trim().email(),
 });
 
 export const meRoutes: FastifyPluginAsync = async (app) => {
@@ -316,6 +321,15 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const supabase = requireSupabase(app);
 
     return { items: await listFollowing(supabase, user.id) };
+  });
+
+  app.post('/follows/by-email', async (request) => {
+    const user = currentUser(request);
+    const body = followByEmailBodySchema.parse(request.body);
+    const supabase = requireSupabase(app);
+
+    await followProfileByEmail(supabase, user.id, body.email);
+    return { ok: true };
   });
 
   app.post('/follows/:profileId', async (request) => {
