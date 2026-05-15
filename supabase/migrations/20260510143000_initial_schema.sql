@@ -2,13 +2,6 @@ create extension if not exists pgcrypto;
 
 do $$
 begin
-  create type public.title_type as enum ('movie', 'anime', 'series');
-exception
-  when duplicate_object then null;
-end $$;
-
-do $$
-begin
   create type public.user_title_action as enum ('liked', 'to_watch', 'rejected', 'watched');
 exception
   when duplicate_object then null;
@@ -36,27 +29,23 @@ create table if not exists public.profiles (
   avatar_url text,
   bio text,
   is_public boolean not null default false,
+  preferred_genres text[] not null default '{}'::text[],
+  release_year_min integer,
+  release_year_max integer,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint profiles_username_format check (
     username is null or username ~ '^[a-zA-Z0-9_]{3,32}$'
+  ),
+  constraint profiles_release_year_range check (
+    (release_year_min is null or release_year_min between 1888 and 9999)
+    and (release_year_max is null or release_year_max between 1888 and 9999)
+    and (
+      release_year_min is null
+      or release_year_max is null
+      or release_year_min <= release_year_max
+    )
   )
-);
-
-create table if not exists public.titles (
-  id text primary key,
-  type public.title_type not null,
-  name text not null,
-  description text,
-  release_year integer,
-  duration text,
-  poster_url text,
-  rating numeric(3, 1),
-  external_source text,
-  external_id text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  constraint titles_rating_range check (rating is null or (rating >= 0 and rating <= 10))
 );
 
 create table if not exists public.genres (
@@ -64,21 +53,18 @@ create table if not exists public.genres (
   name text not null unique
 );
 
-create table if not exists public.title_genres (
-  title_id text not null references public.titles(id) on delete cascade,
-  genre_id uuid not null references public.genres(id) on delete cascade,
-  primary key (title_id, genre_id)
-);
-
 create table if not exists public.user_title_actions (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  title_id text not null references public.titles(id) on delete cascade,
+  title_id text not null,
   action public.user_title_action not null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (user_id, title_id)
 );
+
+comment on column public.user_title_actions.title_id is
+  'Lightweight media key stored for sync, e.g. tmdb:movie:123, tmdb:tv:456, jikan:anime:789.';
 
 create table if not exists public.user_lists (
   id uuid primary key default gen_random_uuid(),
@@ -93,11 +79,14 @@ create table if not exists public.user_lists (
 create table if not exists public.user_list_items (
   id uuid primary key default gen_random_uuid(),
   list_id uuid not null references public.user_lists(id) on delete cascade,
-  title_id text not null references public.titles(id) on delete cascade,
+  title_id text not null,
   position integer not null default 0,
   created_at timestamptz not null default now(),
   unique (list_id, title_id)
 );
+
+comment on column public.user_list_items.title_id is
+  'Lightweight media key stored for sync, e.g. tmdb:movie:123, tmdb:tv:456, jikan:anime:789.';
 
 create table if not exists public.follows (
   id uuid primary key default gen_random_uuid(),
@@ -111,21 +100,31 @@ create table if not exists public.follows (
 create table if not exists public.recommendations (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
-  title_id text not null references public.titles(id) on delete cascade,
+  title_id text not null,
   score numeric not null default 0,
   reason text,
   created_at timestamptz not null default now(),
   unique (user_id, title_id)
 );
 
+comment on column public.recommendations.title_id is
+  'Lightweight media key for a recommended external media.';
+
+create index if not exists user_title_actions_user_updated_idx
+  on public.user_title_actions (user_id, updated_at desc);
+
+create index if not exists user_title_actions_user_action_idx
+  on public.user_title_actions (user_id, action);
+
+create index if not exists user_lists_user_updated_idx
+  on public.user_lists (user_id, updated_at desc);
+
+create index if not exists user_list_items_list_position_idx
+  on public.user_list_items (list_id, position, created_at);
+
 drop trigger if exists set_profiles_updated_at on public.profiles;
 create trigger set_profiles_updated_at
 before update on public.profiles
-for each row execute function public.set_updated_at();
-
-drop trigger if exists set_titles_updated_at on public.titles;
-create trigger set_titles_updated_at
-before update on public.titles
 for each row execute function public.set_updated_at();
 
 drop trigger if exists set_user_title_actions_updated_at on public.user_title_actions;
@@ -138,34 +137,8 @@ create trigger set_user_lists_updated_at
 before update on public.user_lists
 for each row execute function public.set_updated_at();
 
-create or replace view public.titles_with_genres
-with (security_invoker = true) as
-select
-  t.id,
-  t.type,
-  t.name,
-  t.description,
-  t.release_year,
-  t.duration,
-  t.poster_url,
-  t.rating,
-  t.external_source,
-  t.external_id,
-  t.created_at,
-  t.updated_at,
-  coalesce(
-    array_agg(g.name order by g.name) filter (where g.id is not null),
-    '{}'::text[]
-  ) as genres
-from public.titles t
-left join public.title_genres tg on tg.title_id = t.id
-left join public.genres g on g.id = tg.genre_id
-group by t.id;
-
 alter table public.profiles enable row level security;
-alter table public.titles enable row level security;
 alter table public.genres enable row level security;
-alter table public.title_genres enable row level security;
 alter table public.user_title_actions enable row level security;
 alter table public.user_lists enable row level security;
 alter table public.user_list_items enable row level security;
@@ -193,16 +166,8 @@ drop policy if exists profiles_update_own on public.profiles;
 create policy profiles_update_own on public.profiles
 for update using (id = auth.uid()) with check (id = auth.uid());
 
-drop policy if exists titles_select_all on public.titles;
-create policy titles_select_all on public.titles
-for select using (true);
-
 drop policy if exists genres_select_all on public.genres;
 create policy genres_select_all on public.genres
-for select using (true);
-
-drop policy if exists title_genres_select_all on public.title_genres;
-create policy title_genres_select_all on public.title_genres
 for select using (true);
 
 drop policy if exists user_title_actions_select_own on public.user_title_actions;
@@ -329,7 +294,7 @@ create policy recommendations_select_own on public.recommendations
 for select using (user_id = auth.uid());
 
 grant usage on schema public to anon, authenticated;
-grant select on public.titles, public.genres, public.title_genres, public.titles_with_genres to anon, authenticated;
+grant select on public.genres to anon, authenticated;
 grant select, insert, update, delete on public.profiles to authenticated;
 grant select, insert, update, delete on public.user_title_actions to authenticated;
 grant select, insert, update, delete on public.user_lists to authenticated;

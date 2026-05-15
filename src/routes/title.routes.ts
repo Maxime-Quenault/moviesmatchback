@@ -1,4 +1,8 @@
-import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from 'fastify';
+import type {
+  FastifyInstance,
+  FastifyPluginAsync,
+  FastifyRequest,
+} from 'fastify';
 import { z } from 'zod';
 
 import { configurationError, unauthorized } from '../lib/api-error.js';
@@ -8,7 +12,11 @@ import {
   listExternalGenres,
   syncExternalCatalog,
 } from '../services/catalog-sync.service.js';
-import { discoverTmdbTitles } from '../services/tmdb-discovery.service.js';
+import { listPreferenceGenres } from '../services/preference.service.js';
+import {
+  discoverTmdbTitles,
+  searchTmdbTitles,
+} from '../services/tmdb-discovery.service.js';
 import { getTitleById, listTitles } from '../services/title.service.js';
 
 const listTitlesQuerySchema = paginationSchema.extend({
@@ -22,12 +30,36 @@ const externalGenresQuerySchema = z.object({
   language: z.string().trim().min(2).optional(),
 });
 
-const tmdbDiscoverQuerySchema = z.object({
-  type: z.enum(['movie', 'series']),
-  page: z.coerce.number().int().min(1).max(500).optional(),
+const tmdbDiscoverQuerySchema = z
+  .object({
+    type: z.enum(['movie', 'series']),
+    page: z.coerce.number().int().min(1).max(500).optional(),
+    limit: z.coerce.number().int().min(1).max(30).default(20),
+    language: z.string().trim().min(2).optional(),
+    genreId: z.coerce.number().int().positive().optional(),
+    genres: z.string().trim().min(1).optional(),
+    releaseYearMin: z.coerce.number().int().optional(),
+    releaseYearMax: z.coerce.number().int().optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.releaseYearMin !== undefined &&
+      value.releaseYearMax !== undefined &&
+      value.releaseYearMin > value.releaseYearMax
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'releaseYearMin cannot be greater than releaseYearMax',
+        path: ['releaseYearMin'],
+      });
+    }
+  });
+
+const tmdbSearchQuerySchema = z.object({
+  q: z.string().trim().min(1),
+  type: z.enum(['movie', 'series']).optional(),
   limit: z.coerce.number().int().min(1).max(30).default(20),
   language: z.string().trim().min(2).optional(),
-  genreId: z.coerce.number().int().positive().optional(),
 });
 
 const genreIdsByTypeSchema = z.object({
@@ -85,25 +117,51 @@ export const titleRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
+  app.get('/genres', async () => {
+    const supabase = requireSupabase(app);
+
+    return { items: await listPreferenceGenres(supabase) };
+  });
+
   app.get('/discover', async (request) => {
     const query = tmdbDiscoverQuerySchema.parse(request.query);
 
     return {
-      items: await discoverTmdbTitles(app.config, query),
+      items: await discoverTmdbTitles(app.config, {
+        ...query,
+        genreNames: splitGenreQuery(query.genres),
+      }),
     };
   });
 
-  app.post('/sync', { preHandler: assertCatalogSyncAllowed(app) }, async (request) => {
-    const body = syncCatalogBodySchema.parse(request.body);
-    const supabase = requireSupabase(app);
+  app.get('/search/external', async (request) => {
+    const query = tmdbSearchQuerySchema.parse(request.query);
 
-    return syncExternalCatalog(supabase, app.config, {
-      ...body,
-      types: resolveRequestedTypes(body),
-      genreIds: mergeSingleGenreId(body),
-      genreNames: mergeSingleGenreName(body),
-    });
+    return {
+      items: await searchTmdbTitles(app.config, {
+        query: query.q,
+        type: query.type,
+        limit: query.limit,
+        language: query.language,
+      }),
+    };
   });
+
+  app.post(
+    '/sync',
+    { preHandler: assertCatalogSyncAllowed(app) },
+    async (request) => {
+      const body = syncCatalogBodySchema.parse(request.body);
+      const supabase = requireSupabase(app);
+
+      return syncExternalCatalog(supabase, app.config, {
+        ...body,
+        types: resolveRequestedTypes(body),
+        genreIds: mergeSingleGenreId(body),
+        genreNames: mergeSingleGenreName(body),
+      });
+    },
+  );
 
   app.get('/:id', async (request) => {
     const { id } = titleParamsSchema.parse(request.params);
@@ -128,7 +186,9 @@ function assertCatalogSyncAllowed(app: FastifyInstance) {
     }
 
     const receivedToken = request.headers['x-catalog-sync-token'];
-    const token = Array.isArray(receivedToken) ? receivedToken[0] : receivedToken;
+    const token = Array.isArray(receivedToken)
+      ? receivedToken[0]
+      : receivedToken;
 
     if (token !== expectedToken) {
       throw unauthorized('Invalid catalog sync token');
@@ -162,4 +222,14 @@ function mergeSingleGenreName(body: z.infer<typeof syncCatalogBodySchema>) {
   }
 
   return genreNames;
+}
+
+function splitGenreQuery(value?: string): string[] | undefined {
+  const genres =
+    value
+      ?.split(',')
+      .map((genre) => genre.trim())
+      .filter(Boolean) ?? [];
+
+  return genres.length > 0 ? genres : undefined;
 }

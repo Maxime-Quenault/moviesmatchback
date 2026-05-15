@@ -24,16 +24,35 @@ const credentialsSchema = z.object({
   password: passwordSchema,
 });
 
-const signUpSchema = credentialsSchema.extend({
-  displayName: z.string().trim().min(1).max(80).optional(),
-  username: z
-    .string()
-    .trim()
-    .min(3)
-    .max(32)
-    .regex(/^[a-zA-Z0-9_]+$/)
-    .optional(),
-});
+const signUpSchema = credentialsSchema
+  .extend({
+    displayName: z.string().trim().min(1).max(80).optional(),
+    username: z
+      .string()
+      .trim()
+      .min(3)
+      .max(32)
+      .regex(/^[a-zA-Z0-9_]+$/)
+      .optional(),
+    preferredGenres: z.array(z.string().trim().min(1)).min(3),
+    releaseYearMin: z.coerce.number().int().nullable().optional(),
+    releaseYearMax: z.coerce.number().int().nullable().optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.releaseYearMin !== undefined &&
+      value.releaseYearMin !== null &&
+      value.releaseYearMax !== undefined &&
+      value.releaseYearMax !== null &&
+      value.releaseYearMin > value.releaseYearMax
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'releaseYearMin cannot be greater than releaseYearMax',
+        path: ['releaseYearMin'],
+      });
+    }
+  });
 
 const refreshSchema = z.object({
   refreshToken: z.string().min(1),

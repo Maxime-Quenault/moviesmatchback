@@ -97,10 +97,12 @@ Public:
 - `POST /v1/auth/signup`
 - `POST /v1/auth/signin`
 - `POST /v1/auth/refresh`
+- `GET /v1/titles/genres`
 - `GET /v1/titles`
 - `GET /v1/titles?type=movie&genre=Action`
 - `GET /v1/titles/:id`
-- `GET /v1/titles/discover?type=movie&limit=20`
+- `GET /v1/titles/discover?type=movie&limit=20&genres=Action,Drame&releaseYearMin=2000&releaseYearMax=2024`
+- `GET /v1/titles/search/external?q=matrix&type=movie`
 - `GET /v1/titles/external-genres?type=movie`
 - `GET /v1/community/lists`
 - `GET /v1/community/lists/:listId`
@@ -112,9 +114,16 @@ Authentifies avec `Authorization: Bearer <supabase_access_token>`:
 - `POST /v1/auth/logout`
 - `GET /v1/me/profile`
 - `PUT /v1/me/profile`
+- `GET /v1/me/preferences`
+- `PUT /v1/me/preferences`
 - `GET /v1/me/discover`
 - `GET /v1/me/selections`
 - `DELETE /v1/me/selections`
+- `GET /v1/me/media-actions`
+- `POST /v1/me/media-actions/sync`
+- `PUT /v1/me/media-actions`
+- `DELETE /v1/me/media-actions`
+- `DELETE /v1/me/media-actions/:mediaKey`
 - `GET /v1/me/recommendations`
 - `PUT /v1/me/titles/:titleId/action`
 - `DELETE /v1/me/titles/:titleId/action`
@@ -132,6 +141,8 @@ Catalogue externe:
 
 - `GET /v1/titles/discover` recupere les films et series en direct depuis TMDB,
   sans lecture Supabase. C'est l'endpoint a utiliser pour la decouverte live.
+- `GET /v1/titles/search/external` recherche des films et series en direct
+  depuis TMDB pour alimenter la recherche applicative.
 - `POST /v1/titles/sync`
 
 Exemple d'import par genre:
@@ -162,6 +173,43 @@ curl -X PUT http://localhost:3000/v1/me/titles/avengers-endgame/action \
   -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"action\":\"liked\"}"
+```
+
+Exemple de preferences de swipe:
+
+```bash
+curl -X PUT http://localhost:3000/v1/me/preferences \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"preferredGenres\":[\"Action\",\"Drame\",\"Thriller\"],\"releaseYearMin\":2000,\"releaseYearMax\":2024}"
+```
+
+## Synchronisation legere des listes Flutter
+
+L'app Flutter ne stocke pas toutes les metadonnees media dans Supabase. Elle
+stocke uniquement une cle media legere dans `user_title_actions.title_id`, par
+exemple:
+
+- `tmdb:movie:299534`
+- `tmdb:tv:1399`
+- `jikan:anime:5114`
+
+Au login ou au refresh des listes, l'app appelle:
+
+```bash
+curl -X POST http://localhost:3000/v1/me/media-actions/sync \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"items\":[{\"mediaKey\":\"tmdb:movie:299534\",\"action\":\"liked\"}]}"
+```
+
+Le backend upsert les ids/action, recharge toutes les actions du profil, puis
+resolve les metadonnees depuis TMDB/Jikan pour que le client les recache en
+local. Les suppressions peuvent etre envoyees avec:
+
+```bash
+curl -X DELETE http://localhost:3000/v1/me/media-actions/tmdb%3Amovie%3A299534 \
+  -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN"
 ```
 
 ## Verification

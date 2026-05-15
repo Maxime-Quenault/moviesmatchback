@@ -12,6 +12,16 @@ export interface TmdbDiscoveryInput {
   limit: number;
   language?: string;
   genreId?: number;
+  genreNames?: string[];
+  releaseYearMin?: number;
+  releaseYearMax?: number;
+}
+
+export interface TmdbSearchInput {
+  query: string;
+  type?: TmdbDiscoveryType;
+  limit: number;
+  language?: string;
 }
 
 export interface ExternalTitleDto {
@@ -75,37 +85,46 @@ export async function discoverTmdbTitles(
   const language = input.language ?? env.TMDB_LANGUAGE;
   const page = input.page ?? Math.floor(Math.random() * 50) + 1;
   const mediaPath = input.type === 'movie' ? 'movie' : 'tv';
-  const [genres, discovery] = await Promise.all([
-    listTmdbGenres(env, input.type, language),
-    fetchTmdbJson(
-      env,
-      `/discover/${mediaPath}`,
-      {
-        include_adult: 'false',
-        include_video: 'false',
-        language,
-        page: String(page),
-        sort_by: 'popularity.desc',
-        'vote_count.gte': '25',
-        ...(input.genreId ? { with_genres: String(input.genreId) } : {}),
-      },
-      tmdbDiscoverSchema,
-    ),
-  ]);
+  const genres = await listTmdbGenres(env, input.type, language);
+  const discovery = await fetchTmdbJson(
+    env,
+    `/discover/${mediaPath}`,
+    {
+      include_adult: 'false',
+      include_video: 'false',
+      language,
+      page: String(page),
+      sort_by: 'popularity.desc',
+      'vote_count.gte': '25',
+      ...buildGenreQuery(input, genres),
+      ...buildYearQuery(input),
+    },
+    tmdbDiscoverSchema,
+  );
   const genreNameById = new Map(genres.map((genre) => [genre.id, genre.name]));
   const limitedResults = discovery.results.slice(0, input.limit);
 
   const items: Array<ExternalTitleDto | null> = await Promise.all(
     limitedResults.map(async (result) => {
-      const title = normalizeText(input.type === 'movie' ? result.title : result.name);
+      const title = normalizeText(
+        input.type === 'movie' ? result.title : result.name,
+      );
       if (!title || !result.poster_path) {
         return null;
       }
 
-      const detail = await fetchTmdbDetail(env, input.type, result.id, language);
+      const detail = await fetchTmdbDetail(
+        env,
+        input.type,
+        result.id,
+        language,
+      );
       const detailGenres = detail.genres.length > 0 ? detail.genres : null;
-      const genres = detailGenres ?? genreNamesFromIds(result.genre_ids ?? [], genreNameById);
-      const releaseDate = input.type === 'movie' ? result.release_date : result.first_air_date;
+      const genres =
+        detailGenres ??
+        genreNamesFromIds(result.genre_ids ?? [], genreNameById);
+      const releaseDate =
+        input.type === 'movie' ? result.release_date : result.first_air_date;
 
       return {
         id: String(result.id),
@@ -125,6 +144,91 @@ export async function discoverTmdbTitles(
   );
 
   return items.filter((item): item is ExternalTitleDto => Boolean(item));
+}
+
+export async function searchTmdbTitles(
+  env: AppEnv,
+  input: TmdbSearchInput,
+): Promise<ExternalTitleDto[]> {
+  assertTmdbConfigured(env);
+
+  const query = normalizeText(input.query);
+  if (!query) {
+    return [];
+  }
+
+  const language = input.language ?? env.TMDB_LANGUAGE;
+  const types = input.type
+    ? [input.type]
+    : (['movie', 'series'] as const satisfies readonly TmdbDiscoveryType[]);
+
+  const batches = await Promise.all(
+    types.map((type) =>
+      searchTmdbTitlesByType(env, {
+        query,
+        type,
+        limit: input.limit,
+        language,
+      }),
+    ),
+  );
+
+  const mergedItems = input.type ? batches.flat() : interleaveBatches(batches);
+  return dedupeExternalTitles(mergedItems).slice(0, input.limit);
+}
+
+async function searchTmdbTitlesByType(
+  env: AppEnv,
+  input: Required<TmdbSearchInput> & { type: TmdbDiscoveryType },
+): Promise<ExternalTitleDto[]> {
+  const mediaPath = input.type === 'movie' ? 'movie' : 'tv';
+  const [genres, search] = await Promise.all([
+    listTmdbGenres(env, input.type, input.language),
+    fetchTmdbJson(
+      env,
+      `/search/${mediaPath}`,
+      {
+        include_adult: 'false',
+        language: input.language,
+        page: '1',
+        query: input.query,
+      },
+      tmdbDiscoverSchema,
+    ),
+  ]);
+  const genreNameById = new Map(genres.map((genre) => [genre.id, genre.name]));
+
+  return search.results
+    .slice(0, input.limit)
+    .map((result): ExternalTitleDto | null => {
+      const title = normalizeText(
+        input.type === 'movie' ? result.title : result.name,
+      );
+      if (!title) {
+        return null;
+      }
+
+      const releaseDate =
+        input.type === 'movie' ? result.release_date : result.first_air_date;
+
+      return {
+        id: String(result.id),
+        type: input.type,
+        name: title,
+        description: normalizeText(result.overview),
+        releaseYear: yearFromDate(releaseDate),
+        duration: null,
+        posterUrl: result.poster_path
+          ? `${env.TMDB_IMAGE_BASE_URL}${result.poster_path}`
+          : null,
+        rating: normalizeRating(result.vote_average),
+        externalSource: 'tmdb' as const,
+        externalId: String(result.id),
+        genres: genreNamesFromIds(result.genre_ids ?? [], genreNameById),
+        rawData: result,
+      };
+    })
+    .filter((item): item is ExternalTitleDto => Boolean(item));
 }
 
 async function listTmdbGenres(
@@ -196,7 +300,9 @@ async function fetchTmdbJson<T>(
   const response = await fetch(url, {
     headers: {
       accept: 'application/json',
-      ...(env.TMDB_ACCESS_TOKEN ? { Authorization: `Bearer ${env.TMDB_ACCESS_TOKEN}` } : {}),
+      ...(env.TMDB_ACCESS_TOKEN
+        ? { Authorization: `Bearer ${env.TMDB_ACCESS_TOKEN}` }
+        : {}),
     },
   });
 
@@ -218,10 +324,140 @@ function assertTmdbConfigured(env: AppEnv): void {
   }
 }
 
-function genreNamesFromIds(ids: number[], genreNameById: Map<number, string>): string[] {
+function genreNamesFromIds(
+  ids: number[],
+  genreNameById: Map<number, string>,
+): string[] {
   return ids
     .map((id) => genreNameById.get(id))
     .filter((name): name is string => Boolean(name));
+}
+
+function buildGenreQuery(
+  input: TmdbDiscoveryInput,
+  genres: Array<{ id: number; name: string }>,
+): Record<string, string> {
+  const ids = new Set<number>();
+
+  if (input.genreId) {
+    ids.add(input.genreId);
+  }
+
+  for (const genreName of input.genreNames ?? []) {
+    const genreId = resolveTmdbGenreId(genreName, genres);
+    if (genreId) {
+      ids.add(genreId);
+    }
+  }
+
+  return ids.size > 0 ? { with_genres: [...ids].join('|') } : {};
+}
+
+function buildYearQuery(input: TmdbDiscoveryInput): Record<string, string> {
+  const query: Record<string, string> = {};
+  const min = input.releaseYearMin;
+  const max = input.releaseYearMax;
+
+  if (input.type === 'movie') {
+    if (min) {
+      query['primary_release_date.gte'] = `${min}-01-01`;
+    }
+
+    if (max) {
+      query['primary_release_date.lte'] = `${max}-12-31`;
+    }
+
+    return query;
+  }
+
+  if (min) {
+    query['first_air_date.gte'] = `${min}-01-01`;
+  }
+
+  if (max) {
+    query['first_air_date.lte'] = `${max}-12-31`;
+  }
+
+  return query;
+}
+
+function resolveTmdbGenreId(
+  genreName: string,
+  genres: Array<{ id: number; name: string }>,
+): number | null {
+  const requested = normalizeGenreKey(genreName);
+  const aliases = tmdbGenreAliases(requested);
+
+  for (const genre of genres) {
+    const key = normalizeGenreKey(genre.name);
+    if (key === requested || aliases.has(key)) {
+      return genre.id;
+    }
+  }
+
+  return null;
+}
+
+function tmdbGenreAliases(key: string): Set<string> {
+  const aliases = new Map<string, string[]>([
+    ['aventure', ['adventure']],
+    ['comedie', ['comedy']],
+    ['documentaire', ['documentary']],
+    ['drame', ['drama']],
+    ['famille', ['family', 'familial']],
+    ['fantastique', ['fantasy']],
+    ['historique', ['histoire', 'history']],
+    ['horreur', ['horror']],
+    ['mystere', ['mystery']],
+    ['romance', ['romance']],
+    ['sciencefiction', ['sciencefiction', 'scifi', 'sciencefiction']],
+    ['superheros', ['action']],
+    ['guerre', ['war']],
+    ['western', ['western']],
+  ]);
+
+  return new Set(aliases.get(key) ?? []);
+}
+
+function normalizeGenreKey(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function interleaveBatches(batches: ExternalTitleDto[][]): ExternalTitleDto[] {
+  const items: ExternalTitleDto[] = [];
+  const maxLength = Math.max(0, ...batches.map((batch) => batch.length));
+
+  for (let index = 0; index < maxLength; index++) {
+    for (const batch of batches) {
+      const item = batch[index];
+      if (item) {
+        items.push(item);
+      }
+    }
+  }
+
+  return items;
+}
+
+function dedupeExternalTitles(items: ExternalTitleDto[]): ExternalTitleDto[] {
+  const seen = new Set<string>();
+  const uniqueItems: ExternalTitleDto[] = [];
+
+  for (const item of items) {
+    const key = `${item.externalSource}:${item.type}:${item.externalId}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    uniqueItems.push(item);
+  }
+
+  return uniqueItems;
 }
 
 function normalizeText(value: string | null | undefined): string | null {

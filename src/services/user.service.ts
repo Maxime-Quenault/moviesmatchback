@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+import type { AppEnv } from '../config/env.js';
 import { badRequest, notFound } from '../lib/api-error.js';
 import { throwDatabaseError } from '../lib/supabase-error.js';
 import type {
@@ -8,9 +9,15 @@ import type {
   TitleType,
   UserTitleAction,
 } from '../types/database.js';
-import { rankRecommendations, type RecommendationDto } from './recommendation.service.js';
 import {
-  ensureTitleExists,
+  rankRecommendations,
+  type RecommendationDto,
+} from './recommendation.service.js';
+import {
+  resolveMediaKeys,
+  type ResolvedMediaTitleDto,
+} from './external-title-resolver.service.js';
+import {
   getTitlesByIds,
   listAllTitles,
   type TitleDto,
@@ -25,6 +32,24 @@ export interface ActionDto {
   action: UserTitleAction;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface MediaActionSyncInput {
+  mediaKey: string;
+  action: UserTitleAction;
+  updatedAt?: string;
+}
+
+export interface MediaActionRefDto {
+  id: string;
+  mediaKey: string;
+  action: UserTitleAction;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ResolvedMediaActionDto extends MediaActionRefDto {
+  title: ResolvedMediaTitleDto | null;
 }
 
 export interface SelectionsDto {
@@ -48,6 +73,9 @@ export interface ProfileDto {
   avatarUrl: string | null;
   bio: string | null;
   isPublic: boolean;
+  preferredGenres: string[];
+  releaseYearMin: number | null;
+  releaseYearMax: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,6 +103,16 @@ export function mapAction(row: ActionRow): ActionDto {
   };
 }
 
+export function mapMediaAction(row: ActionRow): MediaActionRefDto {
+  return {
+    id: row.id,
+    mediaKey: row.title_id,
+    action: row.action,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export function mapProfile(row: ProfileRow): ProfileDto {
   return {
     id: row.id,
@@ -83,6 +121,11 @@ export function mapProfile(row: ProfileRow): ProfileDto {
     avatarUrl: row.avatar_url,
     bio: row.bio,
     isPublic: row.is_public,
+    preferredGenres: Array.isArray(row.preferred_genres)
+      ? row.preferred_genres
+      : [],
+    releaseYearMin: row.release_year_min,
+    releaseYearMax: row.release_year_max,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -111,8 +154,6 @@ export async function setTitleAction(
   titleId: string,
   action: UserTitleAction,
 ): Promise<ActionDto> {
-  await ensureTitleExists(supabase, titleId);
-
   const { data, error } = await supabase
     .from('user_title_actions')
     .upsert(
@@ -132,6 +173,137 @@ export async function setTitleAction(
   }
 
   return mapAction(data);
+}
+
+export async function listMediaActions(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+): Promise<MediaActionRefDto[]> {
+  const rows = await getUserActions(supabase, userId);
+  return rows.map(mapMediaAction);
+}
+
+export async function setMediaAction(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  input: Pick<MediaActionSyncInput, 'mediaKey' | 'action'>,
+): Promise<MediaActionRefDto> {
+  const { data, error } = await supabase
+    .from('user_title_actions')
+    .upsert(
+      {
+        user_id: userId,
+        title_id: input.mediaKey,
+        action: input.action,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,title_id' },
+    )
+    .select('*')
+    .single();
+
+  if (error) {
+    throwDatabaseError(error, 'Unable to save media action');
+  }
+
+  return mapMediaAction(data);
+}
+
+export async function deleteMediaAction(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  mediaKey: string,
+): Promise<void> {
+  await deleteTitleAction(supabase, userId, mediaKey);
+}
+
+export async function clearMediaActions(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+): Promise<void> {
+  await clearTitleActions(supabase, userId);
+}
+
+export async function syncMediaActions(
+  supabase: SupabaseClient<Database>,
+  env: AppEnv,
+  userId: string,
+  items: MediaActionSyncInput[],
+): Promise<{ items: ResolvedMediaActionDto[] }> {
+  await upsertMediaActionsIfNeeded(supabase, userId, items);
+
+  const actions = await listMediaActions(supabase, userId);
+  return {
+    items: await attachResolvedMediaTitles(env, actions),
+  };
+}
+
+async function upsertMediaActionsIfNeeded(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+  items: MediaActionSyncInput[],
+): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+
+  const existingRows = await getUserActions(supabase, userId);
+  const existingByKey = new Map(existingRows.map((row) => [row.title_id, row]));
+  const now = new Date().toISOString();
+  const rows = items
+    .filter((item) =>
+      shouldUpsertMediaAction(existingByKey.get(item.mediaKey), item),
+    )
+    .map((item) => ({
+      user_id: userId,
+      title_id: item.mediaKey,
+      action: item.action,
+      updated_at: item.updatedAt ?? now,
+    }));
+
+  if (rows.length === 0) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from('user_title_actions')
+    .upsert(rows, { onConflict: 'user_id,title_id' });
+
+  if (error) {
+    throwDatabaseError(error, 'Unable to sync media actions');
+  }
+}
+
+function shouldUpsertMediaAction(
+  existing: ActionRow | undefined,
+  input: MediaActionSyncInput,
+): boolean {
+  if (!existing || !input.updatedAt) {
+    return true;
+  }
+
+  const localUpdatedAt = Date.parse(input.updatedAt);
+  const remoteUpdatedAt = Date.parse(existing.updated_at);
+  if (!Number.isFinite(localUpdatedAt) || !Number.isFinite(remoteUpdatedAt)) {
+    return true;
+  }
+
+  return localUpdatedAt >= remoteUpdatedAt;
+}
+
+async function attachResolvedMediaTitles(
+  env: AppEnv,
+  actions: MediaActionRefDto[],
+): Promise<ResolvedMediaActionDto[]> {
+  const titlesByKey = await resolveMediaKeys(
+    env,
+    actions.map((action) => action.mediaKey),
+  );
+
+  return actions.map((action) => ({
+    ...action,
+    title: titlesByKey.get(action.mediaKey) ?? null,
+  }));
 }
 
 export async function deleteTitleAction(
@@ -256,18 +428,24 @@ export async function getUserRecommendations(
       const title = titleById.get(action.title_id);
       return title ? { action: action.action, title } : null;
     })
-    .filter((context): context is NonNullable<typeof context> => Boolean(context));
+    .filter((context): context is NonNullable<typeof context> =>
+      Boolean(context),
+    );
 
   const allTitles = await listAllTitles(supabase, input.type);
   const selectedIds = new Set(actions.map((action) => action.title_id));
-  const availableTitles = allTitles.filter((title) => !selectedIds.has(title.id));
+  const availableTitles = allTitles.filter(
+    (title) => !selectedIds.has(title.id),
+  );
 
   return {
     items: rankRecommendations(availableTitles, actionContexts, input.limit),
   };
 }
 
-export function favoriteGenresFromSelections(selections: SelectionsDto): string[] {
+export function favoriteGenresFromSelections(
+  selections: SelectionsDto,
+): string[] {
   const counts = new Map<string, number>();
 
   for (const title of [...selections.liked, ...selections.toWatch]) {

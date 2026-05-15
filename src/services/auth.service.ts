@@ -1,12 +1,9 @@
 import type { Session, SupabaseClient, User } from '@supabase/supabase-js';
 
-import {
-  badRequest,
-  conflict,
-  unauthorized,
-} from '../lib/api-error.js';
+import { badRequest, conflict, unauthorized } from '../lib/api-error.js';
 import { throwDatabaseError } from '../lib/supabase-error.js';
 import type { AuthenticatedUser, Database } from '../types/database.js';
+import { normalizePreferencesInput } from './preference.service.js';
 import { ensureProfile, mapProfile, type ProfileDto } from './user.service.js';
 
 export interface AuthPayload {
@@ -14,6 +11,9 @@ export interface AuthPayload {
   password: string;
   displayName?: string;
   username?: string;
+  preferredGenres: string[];
+  releaseYearMin?: number | null;
+  releaseYearMax?: number | null;
 }
 
 export interface RefreshPayload {
@@ -90,12 +90,25 @@ function mapAuthError(error: { message: string; status?: number }): never {
 async function upsertProfileFromAuth(
   supabase: SupabaseClient<Database>,
   user: AuthenticatedUser,
-  input: Pick<AuthPayload, 'displayName' | 'username'>,
+  input: Pick<
+    AuthPayload,
+    | 'displayName'
+    | 'username'
+    | 'preferredGenres'
+    | 'releaseYearMin'
+    | 'releaseYearMax'
+  >,
 ): Promise<ProfileDto> {
+  const preferences = await normalizePreferencesInput(supabase, input, {
+    enforceMinimumGenres: true,
+  });
   const fallbackName = user.email?.split('@')[0] ?? 'Compte local';
   const profileInput: Database['public']['Tables']['profiles']['Insert'] = {
     id: user.id,
     display_name: input.displayName?.trim() || fallbackName,
+    preferred_genres: preferences.preferredGenres,
+    release_year_min: preferences.releaseYearMin,
+    release_year_max: preferences.releaseYearMax,
     updated_at: new Date().toISOString(),
   };
 
@@ -140,6 +153,9 @@ export async function signUpWithPassword(
   input: AuthPayload,
 ): Promise<AuthResponseDto> {
   const email = normalizeEmail(input.email);
+  await normalizePreferencesInput(supabase, input, {
+    enforceMinimumGenres: true,
+  });
 
   const { data: created, error: createError } =
     await supabase.auth.admin.createUser({

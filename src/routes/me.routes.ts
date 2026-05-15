@@ -25,13 +25,22 @@ import {
   updateList,
 } from '../services/list.service.js';
 import {
+  getUserPreferences,
+  updateUserPreferences,
+} from '../services/preference.service.js';
+import {
+  clearMediaActions,
   clearTitleActions,
+  deleteMediaAction,
   deleteTitleAction,
   getDiscoverTitles,
   getProfileWithStats,
   getSelections,
   getUserRecommendations,
+  listMediaActions,
+  setMediaAction,
   setTitleAction,
+  syncMediaActions,
   updateProfile,
 } from '../services/user.service.js';
 import type { AuthenticatedUser } from '../types/database.js';
@@ -57,6 +66,28 @@ const actionBodySchema = z.object({
   action: actionSchema,
 });
 
+const mediaActionBodySchema = z.object({
+  mediaKey: z.string().trim().min(1).max(160),
+  action: actionSchema,
+});
+
+const mediaActionParamsSchema = z.object({
+  mediaKey: z.string().trim().min(1).max(160),
+});
+
+const syncMediaActionsBodySchema = z.object({
+  items: z
+    .array(
+      z.object({
+        mediaKey: z.string().trim().min(1).max(160),
+        action: actionSchema,
+        updatedAt: z.string().trim().min(1).optional(),
+      }),
+    )
+    .max(500)
+    .default([]),
+});
+
 const updateProfileBodySchema = z.object({
   username: z
     .string()
@@ -71,6 +102,28 @@ const updateProfileBodySchema = z.object({
   bio: z.string().trim().max(280).nullable().optional(),
   isPublic: z.boolean().optional(),
 });
+
+const updatePreferencesBodySchema = z
+  .object({
+    preferredGenres: z.array(z.string().trim().min(1)).min(3),
+    releaseYearMin: z.coerce.number().int().nullable().optional(),
+    releaseYearMax: z.coerce.number().int().nullable().optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.releaseYearMin !== undefined &&
+      value.releaseYearMin !== null &&
+      value.releaseYearMax !== undefined &&
+      value.releaseYearMax !== null &&
+      value.releaseYearMin > value.releaseYearMax
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'releaseYearMin cannot be greater than releaseYearMax',
+        path: ['releaseYearMin'],
+      });
+    }
+  });
 
 const createListBodySchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -103,6 +156,21 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     return updateProfile(supabase, user, body);
   });
 
+  app.get('/preferences', async (request) => {
+    const user = currentUser(request);
+    const supabase = requireSupabase(app);
+
+    return getUserPreferences(supabase, user);
+  });
+
+  app.put('/preferences', async (request) => {
+    const user = currentUser(request);
+    const body = updatePreferencesBodySchema.parse(request.body);
+    const supabase = requireSupabase(app);
+
+    return updateUserPreferences(supabase, user, body);
+  });
+
   app.get('/selections', async (request) => {
     const user = currentUser(request);
     const supabase = requireSupabase(app);
@@ -115,6 +183,46 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const supabase = requireSupabase(app);
 
     await clearTitleActions(supabase, user.id);
+    return { ok: true };
+  });
+
+  app.get('/media-actions', async (request) => {
+    const user = currentUser(request);
+    const supabase = requireSupabase(app);
+
+    return { items: await listMediaActions(supabase, user.id) };
+  });
+
+  app.post('/media-actions/sync', async (request) => {
+    const user = currentUser(request);
+    const body = syncMediaActionsBodySchema.parse(request.body);
+    const supabase = requireSupabase(app);
+
+    return syncMediaActions(supabase, app.config, user.id, body.items);
+  });
+
+  app.put('/media-actions', async (request) => {
+    const user = currentUser(request);
+    const body = mediaActionBodySchema.parse(request.body);
+    const supabase = requireSupabase(app);
+
+    return setMediaAction(supabase, user.id, body);
+  });
+
+  app.delete('/media-actions', async (request) => {
+    const user = currentUser(request);
+    const supabase = requireSupabase(app);
+
+    await clearMediaActions(supabase, user.id);
+    return { ok: true };
+  });
+
+  app.delete('/media-actions/:mediaKey', async (request) => {
+    const user = currentUser(request);
+    const { mediaKey } = mediaActionParamsSchema.parse(request.params);
+    const supabase = requireSupabase(app);
+
+    await deleteMediaAction(supabase, user.id, mediaKey);
     return { ok: true };
   });
 

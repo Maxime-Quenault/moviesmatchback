@@ -21,6 +21,9 @@ export interface Database {
           avatar_url: string | null;
           bio: string | null;
           is_public: boolean;
+          preferred_genres: string[];
+          release_year_min: number | null;
+          release_year_max: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -82,12 +85,16 @@ export interface Database {
           created_at: string;
           updated_at: string;
         };
-        Insert: Partial<Database['public']['Tables']['user_title_actions']['Row']> & {
+        Insert: Partial<
+          Database['public']['Tables']['user_title_actions']['Row']
+        > & {
           user_id: string;
           title_id: string;
           action: UserTitleAction;
         };
-        Update: Partial<Database['public']['Tables']['user_title_actions']['Row']>;
+        Update: Partial<
+          Database['public']['Tables']['user_title_actions']['Row']
+        >;
         Relationships: [];
       };
       user_lists: {
@@ -115,7 +122,9 @@ export interface Database {
           position: number;
           created_at: string;
         };
-        Insert: Partial<Database['public']['Tables']['user_list_items']['Row']> & {
+        Insert: Partial<
+          Database['public']['Tables']['user_list_items']['Row']
+        > & {
           list_id: string;
           title_id: string;
         };
@@ -145,7 +154,9 @@ export interface Database {
           reason: string | null;
           created_at: string;
         };
-        Insert: Partial<Database['public']['Tables']['recommendations']['Row']> & {
+        Insert: Partial<
+          Database['public']['Tables']['recommendations']['Row']
+        > & {
           user_id: string;
           title_id: string;
           score: number;
