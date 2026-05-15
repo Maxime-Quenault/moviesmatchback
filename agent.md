@@ -114,6 +114,9 @@ Route d'import catalogue:
 
 - `auth.service.ts`: signup/signin/refresh/logout via Supabase Auth; cree ou
   assure le profil; normalise email; retourne `{ user, profile, session }`.
+  Le signin ne cree jamais d'utilisateur et renvoie toujours
+  `Mot de passe ou adresse mail incorrect` si le compte ou le mot de passe est
+  invalide.
 - `title.service.ts`: liste/recherche locale via `titles_with_genres`,
   mapping `TitleDto`, calcul `seenPercentage`.
 - `tmdb-discovery.service.ts`: decouverte et recherche live TMDB pour films et

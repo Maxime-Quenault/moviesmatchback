@@ -39,6 +39,9 @@ export interface AuthResponseDto {
   session: AuthSessionDto;
 }
 
+export const invalidCredentialsMessage =
+  'Mot de passe ou adresse mail incorrect';
+
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -206,17 +209,21 @@ export async function signInWithPassword(
   supabaseAuth: SupabaseClient<Database>,
   input: Pick<AuthPayload, 'email' | 'password'>,
 ): Promise<AuthResponseDto> {
+  if (!input.email.trim() || !input.password) {
+    throw unauthorized(invalidCredentialsMessage);
+  }
+
   const { data, error } = await supabaseAuth.auth.signInWithPassword({
     email: normalizeEmail(input.email),
     password: input.password,
   });
 
   if (error) {
-    throw unauthorized('Invalid email or password');
+    throw unauthorized(invalidCredentialsMessage);
   }
 
   if (!data.session) {
-    throw unauthorized('Invalid email or password');
+    throw unauthorized(invalidCredentialsMessage);
   }
 
   return buildAuthResponse(supabase, data.session);

@@ -24,6 +24,11 @@ const credentialsSchema = z.object({
   password: passwordSchema,
 });
 
+const signInSchema = z.object({
+  email: z.string().trim(),
+  password: z.string(),
+});
+
 const signUpSchema = credentialsSchema
   .extend({
     displayName: z.string().trim().min(1).max(80).optional(),
@@ -77,7 +82,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post('/signin', async (request) => {
-    const body = credentialsSchema.parse(request.body);
+    const body = signInSchema.parse(request.body);
     const supabase = requireSupabase(app);
     const supabaseAuth = requireSupabaseAuth(app);
 
