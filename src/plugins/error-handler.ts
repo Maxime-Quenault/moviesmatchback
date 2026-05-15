@@ -34,6 +34,24 @@ export const errorHandlerPlugin = fp(async (app) => {
       });
     }
 
+    const httpError = error as Error & {
+      code?: unknown;
+      statusCode?: unknown;
+    };
+    if (
+      typeof httpError.statusCode === 'number' &&
+      httpError.statusCode >= 400 &&
+      httpError.statusCode < 500
+    ) {
+      return reply.status(httpError.statusCode).send({
+        error: {
+          code:
+            typeof httpError.code === 'string' ? httpError.code : 'BAD_REQUEST',
+          message: httpError.message,
+        },
+      });
+    }
+
     app.log.error(error);
     return reply.status(500).send({
       error: {

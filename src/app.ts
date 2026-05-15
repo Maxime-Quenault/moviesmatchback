@@ -22,6 +22,28 @@ export async function buildApp() {
   });
 
   app.decorate('config', config);
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      const rawBody = typeof body === 'string' ? body : body.toString('utf8');
+
+      if (rawBody.trim().length === 0) {
+        done(null, undefined);
+        return;
+      }
+
+      try {
+        done(null, JSON.parse(rawBody));
+      } catch (error) {
+        const parseError =
+          error instanceof Error ? error : new Error('Invalid JSON body');
+        (parseError as Error & { statusCode?: number }).statusCode = 400;
+        done(parseError, undefined);
+      }
+    },
+  );
 
   await app.register(helmet);
   await app.register(cors, {
