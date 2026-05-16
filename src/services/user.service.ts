@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import type { AppEnv } from '../config/env.js';
-import { badRequest, notFound } from '../lib/api-error.js';
+import { badRequest, notFound, upstreamError } from '../lib/api-error.js';
 import { throwDatabaseError } from '../lib/supabase-error.js';
 import type {
   AuthenticatedUser,
@@ -103,6 +103,19 @@ export interface UpdateProfileInput {
   avatarUrl?: string | null;
   bio?: string | null;
   isPublic?: boolean;
+}
+
+export const profileAvatarMaxBytes = 3 * 1024 * 1024;
+
+const avatarMimeTypes = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+]);
+
+export interface UploadProfileAvatarInput {
+  buffer: Buffer;
+  mimeType: string;
 }
 
 export function mapAction(row: ActionRow): ActionDto {
@@ -617,6 +630,117 @@ export async function updateProfile(
   }
 
   return mapProfile(data);
+}
+
+export async function uploadProfileAvatar(
+  supabase: SupabaseClient<Database>,
+  env: AppEnv,
+  user: AuthenticatedUser,
+  input: UploadProfileAvatarInput,
+): Promise<ProfileDto> {
+  await ensureProfile(supabase, user);
+
+  const normalizedMimeType = input.mimeType.toLowerCase();
+  const extension = avatarMimeTypes.get(normalizedMimeType);
+  if (!extension) {
+    throw badRequest('Format image non supporte');
+  }
+
+  if (input.buffer.length === 0) {
+    throw badRequest('Image vide ou illisible');
+  }
+
+  if (input.buffer.length > profileAvatarMaxBytes) {
+    throw badRequest('Image trop lourde');
+  }
+
+  if (!hasExpectedAvatarSignature(input.buffer, normalizedMimeType)) {
+    throw badRequest('Image invalide');
+  }
+
+  const bucket = env.SUPABASE_AVATAR_BUCKET;
+  await ensureAvatarBucket(supabase, bucket);
+
+  const objectPath = `${user.id}/avatar-${Date.now()}.${extension}`;
+  const { error } = await supabase.storage
+    .from(bucket)
+    .upload(objectPath, input.buffer, {
+      cacheControl: '31536000',
+      contentType: normalizedMimeType,
+      upsert: false,
+    });
+
+  if (error) {
+    throw upstreamError('Impossible d envoyer la photo de profil', error);
+  }
+
+  const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
+  return updateProfile(supabase, user, { avatarUrl: data.publicUrl });
+}
+
+async function ensureAvatarBucket(
+  supabase: SupabaseClient<Database>,
+  bucket: string,
+): Promise<void> {
+  const { data: buckets, error: listError } =
+    await supabase.storage.listBuckets();
+  if (listError) {
+    throw upstreamError(
+      'Impossible de verifier le stockage des avatars',
+      listError,
+    );
+  }
+
+  if (buckets?.some((item) => item.name === bucket)) {
+    return;
+  }
+
+  const { error } = await supabase.storage.createBucket(bucket, {
+    public: true,
+    fileSizeLimit: profileAvatarMaxBytes,
+    allowedMimeTypes: [...avatarMimeTypes.keys()],
+  });
+
+  if (error) {
+    throw upstreamError(
+      'Impossible de preparer le stockage des avatars',
+      error,
+    );
+  }
+}
+
+function hasExpectedAvatarSignature(buffer: Buffer, mimeType: string): boolean {
+  if (mimeType === 'image/jpeg') {
+    return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+
+  if (mimeType === 'image/png') {
+    return (
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47 &&
+      buffer[4] === 0x0d &&
+      buffer[5] === 0x0a &&
+      buffer[6] === 0x1a &&
+      buffer[7] === 0x0a
+    );
+  }
+
+  if (mimeType === 'image/webp') {
+    return (
+      buffer[0] === 0x52 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46 &&
+      buffer[3] === 0x46 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x45 &&
+      buffer[10] === 0x42 &&
+      buffer[11] === 0x50
+    );
+  }
+
+  return false;
 }
 
 export async function getVisibleProfile(

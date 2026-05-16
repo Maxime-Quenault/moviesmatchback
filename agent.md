@@ -18,6 +18,7 @@ Ce dossier est un repo Git separe de `moviesmatchapp`.
 
 - Runtime: Node.js >= 20, TypeScript, modules ESM.
 - HTTP: Fastify 5 avec `@fastify/cors`, `helmet`, `rate-limit`.
+- Uploads: `@fastify/multipart` pour les images de profil.
 - Validation: Zod aux frontieres des routes.
 - Data/auth: Supabase JS v2, PostgreSQL/Supabase migrations.
 - Tests: Vitest.
@@ -46,6 +47,8 @@ Voir `.env.example`.
 - `TMDB_ACCESS_TOKEN` recommande, `TMDB_API_KEY` encore accepte.
 - `TMDB_BASE_URL`, `TMDB_IMAGE_BASE_URL`, `TMDB_LANGUAGE`.
 - `JIKAN_BASE_URL`.
+- `SUPABASE_AVATAR_BUCKET`, defaut `profile-avatars`, bucket Storage public
+  utilise pour les photos de profil.
 - `CATALOG_SYNC_TOKEN` protege `POST /v1/titles/sync`; requis en production.
 
 Ne jamais exposer `SUPABASE_SERVICE_ROLE_KEY` dans Flutter.
@@ -94,6 +97,7 @@ Routes authentifiees avec `Authorization: Bearer <access_token>`:
 
 - `GET /v1/auth/me`, `POST /v1/auth/logout`
 - `GET|PUT /v1/me/profile`
+- `POST /v1/me/profile/avatar`
 - `GET|PUT /v1/me/preferences`
 - `GET|DELETE /v1/me/selections`
 - `GET /v1/me/media-actions`
@@ -129,7 +133,7 @@ Route d'import catalogue:
 - `catalog-sync.service.ts`: importe TMDB films/series et Jikan anime dans
   `titles`, `genres`, `title_genres`.
 - `user.service.ts`: profils, selections, actions utilisateur, decouverte
-  locale, recommandations.
+  locale, recommandations, upload avatar vers Supabase Storage.
 - `recommendation.service.ts`: scoring simple par genres positifs
   (`liked`, `to_watch`), fallback par note.
 - `external-title-resolver.service.ts`: resout les cles legeres
@@ -148,6 +152,8 @@ Tables attendues par le code:
 
 - `profiles`
   - inclut `preferred_genres`, `release_year_min`, `release_year_max`.
+  - `avatar_url` contient l'URL publique de l'image uploadee dans Supabase
+    Storage.
 - `titles`
 - `genres`
 - `title_genres`

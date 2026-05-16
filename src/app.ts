@@ -1,5 +1,6 @@
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 
@@ -52,6 +53,13 @@ export async function buildApp() {
   await app.register(rateLimit, {
     max: 120,
     timeWindow: '1 minute',
+  });
+  await app.register(multipart, {
+    limits: {
+      files: 1,
+      fileSize: 3 * 1024 * 1024,
+    },
+    throwFileSizeLimit: true,
   });
   await app.register(errorHandlerPlugin);
   await app.register(supabasePlugin);

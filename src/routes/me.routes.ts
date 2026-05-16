@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 
-import { unauthorized } from '../lib/api-error.js';
+import { badRequest, unauthorized } from '../lib/api-error.js';
 import { requireSupabase } from '../lib/supabase.js';
 import {
   actionSchema,
@@ -36,6 +36,7 @@ import {
   deleteTitleAction,
   getDiscoverTitles,
   getProfileWithStats,
+  profileAvatarMaxBytes,
   getSelections,
   getUserRecommendations,
   listMediaActions,
@@ -43,6 +44,7 @@ import {
   setTitleAction,
   syncMediaActions,
   updateProfile,
+  uploadProfileAvatar,
 } from '../services/user.service.js';
 import type { AuthenticatedUser } from '../types/database.js';
 
@@ -159,6 +161,27 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const supabase = requireSupabase(app);
 
     return updateProfile(supabase, user, body);
+  });
+
+  app.post('/profile/avatar', async (request) => {
+    const user = currentUser(request);
+    const supabase = requireSupabase(app);
+    const file = await request.file({
+      limits: {
+        files: 1,
+        fileSize: profileAvatarMaxBytes,
+      },
+    });
+
+    if (!file) {
+      throw badRequest('Aucune image selectionnee');
+    }
+
+    const buffer = await file.toBuffer();
+    return uploadProfileAvatar(supabase, app.config, user, {
+      buffer,
+      mimeType: file.mimetype,
+    });
   });
 
   app.get('/preferences', async (request) => {

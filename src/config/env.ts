@@ -21,6 +21,7 @@ const envSchema = z.object({
   TMDB_LANGUAGE: z.string().min(2).default('fr-FR'),
   JIKAN_BASE_URL: z.string().url().default('https://api.jikan.moe/v4'),
   CATALOG_SYNC_TOKEN: z.string().min(1).optional(),
+  SUPABASE_AVATAR_BUCKET: z.string().min(1).default('profile-avatars'),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
