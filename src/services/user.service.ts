@@ -586,16 +586,28 @@ export async function updateProfile(
     throw badRequest('Username cannot be empty');
   }
 
+  const updates: Database['public']['Tables']['profiles']['Update'] = {
+    updated_at: new Date().toISOString(),
+  };
+  if (input.username !== undefined) {
+    updates.username = input.username;
+  }
+  if (input.displayName !== undefined) {
+    updates.display_name = input.displayName;
+  }
+  if (input.avatarUrl !== undefined) {
+    updates.avatar_url = input.avatarUrl;
+  }
+  if (input.bio !== undefined) {
+    updates.bio = input.bio;
+  }
+  if (input.isPublic !== undefined) {
+    updates.is_public = input.isPublic;
+  }
+
   const { data, error } = await supabase
     .from('profiles')
-    .update({
-      username: input.username,
-      display_name: input.displayName,
-      avatar_url: input.avatarUrl,
-      bio: input.bio,
-      is_public: input.isPublic,
-      updated_at: new Date().toISOString(),
-    })
+    .update(updates)
     .eq('id', user.id)
     .select('*')
     .single();
