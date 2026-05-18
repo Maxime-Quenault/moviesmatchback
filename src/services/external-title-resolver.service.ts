@@ -6,7 +6,7 @@ import type { TitleType } from '../types/database.js';
 
 type MediaSource = 'tmdb' | 'jikan' | 'local';
 
-interface MediaKeyParts {
+export interface MediaKeyParts {
   source: MediaSource;
   type: TitleType;
   externalType: 'movie' | 'tv' | 'anime';
