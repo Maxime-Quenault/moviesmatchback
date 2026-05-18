@@ -14,7 +14,6 @@ import {
   type RecommendationDto,
 } from './recommendation.service.js';
 import {
-  parseMediaKey,
   resolveMediaKeys,
   type ResolvedMediaTitleDto,
 } from './external-title-resolver.service.js';
@@ -50,7 +49,7 @@ export interface MediaActionRefDto {
 }
 
 export interface ResolvedMediaActionDto extends MediaActionRefDto {
-  title: TitleDto | ResolvedMediaTitleDto | null;
+  title: ResolvedMediaTitleDto | null;
 }
 
 export interface SelectionsDto {
@@ -260,7 +259,7 @@ export async function syncMediaActions(
 
   const actions = await listMediaActions(supabase, userId);
   return {
-    items: await attachResolvedMediaTitles(supabase, env, actions),
+    items: await attachResolvedMediaTitles(env, actions),
   };
 }
 
@@ -318,56 +317,18 @@ function shouldUpsertMediaAction(
 }
 
 async function attachResolvedMediaTitles(
-  supabase: SupabaseClient<Database>,
   env: AppEnv,
   actions: MediaActionRefDto[],
 ): Promise<ResolvedMediaActionDto[]> {
-  const actionKeys = actions.map((action) => action.mediaKey);
-  const [resolvedTitles, localTitles] = await Promise.all([
-    resolveMediaKeys(env, actionKeys),
-    getTitlesByIds(supabase, localTitleIdsFromActionKeys(actionKeys)),
-  ]);
-  const localTitlesById = new Map(localTitles.map((title) => [title.id, title]));
-  const localTitlesByActionKey = new Map<string, TitleDto>();
-
-  for (const actionKey of actionKeys) {
-    const localId = localTitleIdFromActionKey(actionKey);
-    const title = localId ? localTitlesById.get(localId) : undefined;
-    if (title) {
-      localTitlesByActionKey.set(actionKey, title);
-    }
-  }
+  const titlesByKey = await resolveMediaKeys(
+    env,
+    actions.map((action) => action.mediaKey),
+  );
 
   return actions.map((action) => ({
     ...action,
-    title:
-      resolvedTitles.get(action.mediaKey) ??
-      localTitlesByActionKey.get(action.mediaKey) ??
-      null,
+    title: titlesByKey.get(action.mediaKey) ?? null,
   }));
-}
-
-function localTitleIdsFromActionKeys(actionKeys: string[]): string[] {
-  return [
-    ...new Set(
-      actionKeys
-        .map(localTitleIdFromActionKey)
-        .filter((id): id is string => Boolean(id)),
-    ),
-  ];
-}
-
-function localTitleIdFromActionKey(actionKey: string): string | null {
-  const parsed = parseMediaKey(actionKey);
-  if (parsed?.source === 'local') {
-    return parsed.externalId;
-  }
-
-  if (parsed) {
-    return null;
-  }
-
-  return actionKey;
 }
 
 export async function deleteTitleAction(

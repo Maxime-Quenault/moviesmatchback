@@ -138,8 +138,6 @@ Route d'import catalogue:
   (`liked`, `to_watch`), fallback par note.
 - `external-title-resolver.service.ts`: resout les cles legeres
   `tmdb:movie:id`, `tmdb:tv:id`, `jikan:anime:id` en metadonnees via TMDB/Jikan.
-  Les actions media locales/anciennes sont aussi rattachees aux titres du
-  catalogue depuis `user.service.ts` pendant la synchro.
 - `list.service.ts`: listes utilisateur, items, visibilite, follows.
 
 ## Modele de donnees attendu
@@ -193,8 +191,6 @@ Synchronisation legere:
 - Exemples: `tmdb:movie:299534`, `tmdb:tv:1399`, `jikan:anime:5114`.
 - `POST /v1/me/media-actions/sync` upsert les actions locales, recharge toutes
   les actions du profil et renvoie les titres resolus pour le cache local.
-  Les cles externes sont resolues via TMDB/Jikan; les cles `local:*` et anciens
-  ids de catalogue sont resolus via `titles_with_genres`.
 
 Preferences de swipe:
 
