@@ -14,6 +14,7 @@ import {
   type RecommendationDto,
 } from './recommendation.service.js';
 import {
+  parseMediaKey,
   resolveMediaKeys,
   type ResolvedMediaTitleDto,
 } from './external-title-resolver.service.js';
@@ -49,14 +50,14 @@ export interface MediaActionRefDto {
 }
 
 export interface ResolvedMediaActionDto extends MediaActionRefDto {
-  title: ResolvedMediaTitleDto | null;
+  title: SelectionTitleDto | null;
 }
 
 export interface SelectionsDto {
-  liked: TitleDto[];
-  toWatch: TitleDto[];
-  rejected: TitleDto[];
-  watched: TitleDto[];
+  liked: SelectionTitleDto[];
+  toWatch: SelectionTitleDto[];
+  rejected: SelectionTitleDto[];
+  watched: SelectionTitleDto[];
   totals: {
     liked: number;
     toWatch: number;
@@ -66,11 +67,11 @@ export interface SelectionsDto {
   };
 }
 
-type ShareableTitleDto = TitleDto | ResolvedMediaTitleDto;
+type SelectionTitleDto = TitleDto | ResolvedMediaTitleDto;
 
 export interface ShareableSelectionsDto {
-  liked: ShareableTitleDto[];
-  toWatch: ShareableTitleDto[];
+  liked: SelectionTitleDto[];
+  toWatch: SelectionTitleDto[];
   totals: {
     liked: number;
     toWatch: number;
@@ -259,7 +260,7 @@ export async function syncMediaActions(
 
   const actions = await listMediaActions(supabase, userId);
   return {
-    items: await attachResolvedMediaTitles(env, actions),
+    items: await attachResolvedMediaTitles(supabase, env, actions),
   };
 }
 
@@ -317,18 +318,83 @@ function shouldUpsertMediaAction(
 }
 
 async function attachResolvedMediaTitles(
+  supabase: SupabaseClient<Database>,
   env: AppEnv,
   actions: MediaActionRefDto[],
 ): Promise<ResolvedMediaActionDto[]> {
-  const titlesByKey = await resolveMediaKeys(
+  const actionKeys = actions
+    .filter((action) => shouldResolveActionTitle(action.action))
+    .map((action) => action.mediaKey);
+  const titlesByKey = await resolveTitlesForActionKeys(
+    supabase,
     env,
-    actions.map((action) => action.mediaKey),
+    actionKeys,
   );
 
   return actions.map((action) => ({
     ...action,
-    title: titlesByKey.get(action.mediaKey) ?? null,
+    title: shouldResolveActionTitle(action.action)
+      ? titlesByKey.get(action.mediaKey) ?? null
+      : null,
   }));
+}
+
+function shouldResolveActionTitle(action: UserTitleAction): boolean {
+  return action === 'liked' || action === 'to_watch' || action === 'watched';
+}
+
+async function resolveTitlesForActionKeys(
+  supabase: SupabaseClient<Database>,
+  env: AppEnv,
+  actionKeys: string[],
+): Promise<Map<string, SelectionTitleDto>> {
+  const uniqueActionKeys = [...new Set(actionKeys)];
+  if (uniqueActionKeys.length === 0) {
+    return new Map();
+  }
+
+  const localIds = localTitleIdsFromActionKeys(uniqueActionKeys);
+  const [resolvedTitles, localTitles] = await Promise.all([
+    resolveMediaKeys(env, uniqueActionKeys),
+    localIds.length > 0 ? getTitlesByIds(supabase, localIds) : [],
+  ]);
+  const localTitlesById = new Map(localTitles.map((title) => [title.id, title]));
+  const titleByActionKey = new Map<string, SelectionTitleDto>();
+
+  for (const actionKey of uniqueActionKeys) {
+    const localId = localTitleIdFromActionKey(actionKey);
+    const localTitle = localId ? localTitlesById.get(localId) : undefined;
+    const resolvedTitle = resolvedTitles.get(actionKey) ?? undefined;
+    const title = resolvedTitle ?? localTitle;
+    if (title) {
+      titleByActionKey.set(actionKey, title);
+    }
+  }
+
+  return titleByActionKey;
+}
+
+function localTitleIdsFromActionKeys(actionKeys: string[]): string[] {
+  return [
+    ...new Set(
+      actionKeys
+        .map(localTitleIdFromActionKey)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+}
+
+function localTitleIdFromActionKey(actionKey: string): string | null {
+  const parsed = parseMediaKey(actionKey);
+  if (parsed?.source === 'local') {
+    return parsed.externalId;
+  }
+
+  if (parsed) {
+    return null;
+  }
+
+  return actionKey;
 }
 
 export async function deleteTitleAction(
@@ -363,14 +429,17 @@ export async function clearTitleActions(
 
 export async function getSelections(
   supabase: SupabaseClient<Database>,
+  env: AppEnv,
   userId: string,
 ): Promise<SelectionsDto> {
   const actions = await getUserActions(supabase, userId);
-  const titles = await getTitlesByIds(
+  const titleByActionKey = await resolveTitlesForActionKeys(
     supabase,
-    actions.map((action) => action.title_id),
+    env,
+    actions
+      .filter((action) => shouldResolveActionTitle(action.action))
+      .map((action) => action.title_id),
   );
-  const titleById = new Map(titles.map((title) => [title.id, title]));
 
   const selections: SelectionsDto = {
     liked: [],
@@ -387,7 +456,7 @@ export async function getSelections(
   };
 
   for (const action of actions) {
-    const title = titleById.get(action.title_id);
+    const title = titleByActionKey.get(action.title_id);
     if (!title) {
       continue;
     }
@@ -427,11 +496,11 @@ export async function getShareableSelections(
     (action) => action.action === 'liked' || action.action === 'to_watch',
   );
   const actionKeys = actions.map((action) => action.title_id);
-  const [resolvedTitles, localTitles] = await Promise.all([
-    resolveMediaKeys(env, actionKeys),
-    getTitlesByIds(supabase, actionKeys),
-  ]);
-  const localTitleById = new Map(localTitles.map((title) => [title.id, title]));
+  const titleByActionKey = await resolveTitlesForActionKeys(
+    supabase,
+    env,
+    actionKeys,
+  );
 
   const selections: ShareableSelectionsDto = {
     liked: [],
@@ -444,10 +513,7 @@ export async function getShareableSelections(
   };
 
   for (const action of actions) {
-    const title =
-      resolvedTitles.get(action.title_id) ??
-      localTitleById.get(action.title_id) ??
-      null;
+    const title = titleByActionKey.get(action.title_id) ?? null;
 
     if (!title) {
       continue;
@@ -574,11 +640,12 @@ export async function ensureProfile(
 
 export async function getProfileWithStats(
   supabase: SupabaseClient<Database>,
+  env: AppEnv,
   user: AuthenticatedUser,
 ): Promise<ProfileWithStatsDto> {
   const [profile, selections] = await Promise.all([
     ensureProfile(supabase, user),
-    getSelections(supabase, user.id),
+    getSelections(supabase, env, user.id),
   ]);
 
   return {

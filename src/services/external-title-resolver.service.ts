@@ -6,7 +6,7 @@ import type { TitleType } from '../types/database.js';
 
 type MediaSource = 'tmdb' | 'jikan' | 'local';
 
-interface MediaKeyParts {
+export interface MediaKeyParts {
   source: MediaSource;
   type: TitleType;
   externalType: 'movie' | 'tv' | 'anime';
@@ -94,6 +94,10 @@ const jikanAnimeResponseSchema = z.object({
   data: jikanAnimeSchema,
 });
 
+const tmdbResolveConcurrency = 10;
+const jikanResolveIntervalMs = 350;
+const jikanRateLimitRetryDelaysMs = [800, 1600];
+
 export function parseMediaKey(mediaKey: string): MediaKeyParts | null {
   const [source, rawType, externalId, ...extra] = mediaKey.split(':');
 
@@ -139,6 +143,8 @@ export async function resolveMediaKeys(
 ): Promise<Map<string, ResolvedMediaTitleDto | null>> {
   const uniqueKeys = [...new Set(mediaKeys)];
   const resolved = new Map<string, ResolvedMediaTitleDto | null>();
+  const tmdbKeys: Array<{ key: string; parts: MediaKeyParts }> = [];
+  const jikanKeys: Array<{ key: string; parts: MediaKeyParts }> = [];
 
   for (const mediaKey of uniqueKeys) {
     const parts = parseMediaKey(mediaKey);
@@ -147,18 +153,83 @@ export async function resolveMediaKeys(
       continue;
     }
 
-    try {
-      const title =
-        parts.source === 'tmdb'
-          ? await resolveTmdbTitle(env, parts)
-          : await resolveJikanAnime(env, parts);
-      resolved.set(mediaKey, title);
-    } catch {
-      resolved.set(mediaKey, null);
+    if (parts.source === 'tmdb') {
+      tmdbKeys.push({ key: mediaKey, parts });
+    } else {
+      jikanKeys.push({ key: mediaKey, parts });
     }
   }
 
+  const [tmdbResults, jikanResults] = await Promise.all([
+    mapWithConcurrency(tmdbKeys, tmdbResolveConcurrency, ({ key, parts }) =>
+      resolveOneMediaKey(env, key, parts),
+    ),
+    mapSequentiallyWithDelay(jikanKeys, jikanResolveIntervalMs, ({ key, parts }) =>
+      resolveOneMediaKey(env, key, parts),
+    ),
+  ]);
+
+  for (const [mediaKey, title] of [...tmdbResults, ...jikanResults]) {
+    resolved.set(mediaKey, title);
+  }
+
   return resolved;
+}
+
+async function resolveOneMediaKey(
+  env: AppEnv,
+  mediaKey: string,
+  parts: MediaKeyParts,
+): Promise<readonly [string, ResolvedMediaTitleDto | null]> {
+  try {
+    const title =
+      parts.source === 'tmdb'
+        ? await resolveTmdbTitle(env, parts)
+        : await resolveJikanAnime(env, parts);
+    return [mediaKey, title] as const;
+  } catch {
+    return [mediaKey, null] as const;
+  }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await mapper(items[currentIndex]);
+    }
+  }
+
+  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, () => worker()),
+  );
+  return results;
+}
+
+async function mapSequentiallyWithDelay<T, R>(
+  items: T[],
+  intervalMs: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+
+  for (let index = 0; index < items.length; index += 1) {
+    if (index > 0) {
+      await delay(intervalMs);
+    }
+    results.push(await mapper(items[index]));
+  }
+
+  return results;
 }
 
 async function resolveTmdbTitle(
@@ -247,7 +318,9 @@ async function resolveJikanAnime(
   }
 
   const url = new URL(`${env.JIKAN_BASE_URL}/anime/${id}`);
-  const parsed = await fetchJson(url, undefined, jikanAnimeResponseSchema);
+  const parsed = await fetchJson(url, undefined, jikanAnimeResponseSchema, {
+    rateLimitRetryDelaysMs: jikanRateLimitRetryDelaysMs,
+  });
   const anime = parsed.data;
   const name = normalizeText(anime.title_english) ?? normalizeText(anime.title);
   if (!name) {
@@ -306,17 +379,38 @@ async function fetchJson<T>(
   url: URL,
   headers: Record<string, string> | undefined,
   schema: z.ZodType<T>,
+  options: { rateLimitRetryDelaysMs?: number[] } = {},
 ): Promise<T> {
-  const response = await fetch(url, { headers });
+  const retryDelays = options.rateLimitRetryDelaysMs ?? [];
 
-  if (!response.ok) {
-    throw upstreamError('External title resolve request failed', {
-      status: response.status,
-      url: url.toString(),
-    });
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    const response = await fetch(url, { headers });
+
+    if (response.status === 429 && attempt < retryDelays.length) {
+      await delay(retryDelays[attempt]);
+      continue;
+    }
+
+    if (!response.ok) {
+      throw upstreamError('External title resolve request failed', {
+        status: response.status,
+        url: url.toString(),
+      });
+    }
+
+    return schema.parse(await response.json());
   }
 
-  return schema.parse(await response.json());
+  throw upstreamError('External title resolve request failed', {
+    status: 429,
+    url: url.toString(),
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function normalizeText(value: string | null | undefined): string | null {

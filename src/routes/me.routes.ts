@@ -152,7 +152,7 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const user = currentUser(request);
     const supabase = requireSupabase(app);
 
-    return getProfileWithStats(supabase, user);
+    return getProfileWithStats(supabase, app.config, user);
   });
 
   app.put('/profile', async (request) => {
@@ -203,7 +203,7 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const user = currentUser(request);
     const supabase = requireSupabase(app);
 
-    return getSelections(supabase, user.id);
+    return getSelections(supabase, app.config, user.id);
   });
 
   app.delete('/selections', async (request) => {
