@@ -193,8 +193,10 @@ Synchronisation legere:
 - Exemples: `tmdb:movie:299534`, `tmdb:tv:1399`, `jikan:anime:5114`.
 - `POST /v1/me/media-actions/sync` upsert les actions locales, recharge toutes
   les actions du profil et renvoie les titres resolus pour le cache local.
-  Les cles externes sont resolues via TMDB/Jikan; les cles `local:*` et anciens
-  ids de catalogue sont resolus via `titles_with_genres`.
+  Les cles externes sont resolues d'abord via `titles_with_genres` quand le
+  catalogue contient `external_source/external_id`, puis via TMDB/Jikan en
+  secours. Les cles `local:*` et anciens ids de catalogue sont aussi resolus
+  via `titles_with_genres`.
 
 Preferences de swipe:
 

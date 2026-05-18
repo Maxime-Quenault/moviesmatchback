@@ -19,8 +19,10 @@ import {
   type ResolvedMediaTitleDto,
 } from './external-title-resolver.service.js';
 import {
+  getTitlesByExternalRefs,
   getTitlesByIds,
   listAllTitles,
+  type ExternalTitleRef,
   type TitleDto,
 } from './title.service.js';
 
@@ -50,14 +52,16 @@ export interface MediaActionRefDto {
 }
 
 export interface ResolvedMediaActionDto extends MediaActionRefDto {
-  title: TitleDto | ResolvedMediaTitleDto | null;
+  title: SelectionTitleDto | null;
 }
 
+type SelectionTitleDto = TitleDto | ResolvedMediaTitleDto;
+
 export interface SelectionsDto {
-  liked: TitleDto[];
-  toWatch: TitleDto[];
-  rejected: TitleDto[];
-  watched: TitleDto[];
+  liked: SelectionTitleDto[];
+  toWatch: SelectionTitleDto[];
+  rejected: SelectionTitleDto[];
+  watched: SelectionTitleDto[];
   totals: {
     liked: number;
     toWatch: number;
@@ -67,11 +71,9 @@ export interface SelectionsDto {
   };
 }
 
-type ShareableTitleDto = TitleDto | ResolvedMediaTitleDto;
-
 export interface ShareableSelectionsDto {
-  liked: ShareableTitleDto[];
-  toWatch: ShareableTitleDto[];
+  liked: SelectionTitleDto[];
+  toWatch: SelectionTitleDto[];
   totals: {
     liked: number;
     toWatch: number;
@@ -323,38 +325,69 @@ async function attachResolvedMediaTitles(
   actions: MediaActionRefDto[],
 ): Promise<ResolvedMediaActionDto[]> {
   const actionKeys = actions.map((action) => action.mediaKey);
-  const [resolvedTitles, localTitles] = await Promise.all([
-    resolveMediaKeys(env, actionKeys),
-    getTitlesByIds(supabase, localTitleIdsFromActionKeys(actionKeys)),
-  ]);
-  const localTitlesById = new Map(localTitles.map((title) => [title.id, title]));
-  const localTitlesByActionKey = new Map<string, TitleDto>();
-
-  for (const actionKey of actionKeys) {
-    const localId = localTitleIdFromActionKey(actionKey);
-    const title = localId ? localTitlesById.get(localId) : undefined;
-    if (title) {
-      localTitlesByActionKey.set(actionKey, title);
-    }
-  }
+  const titleByActionKey = await resolveTitlesForActionKeys(
+    supabase,
+    env,
+    actionKeys,
+  );
 
   return actions.map((action) => ({
     ...action,
-    title:
-      resolvedTitles.get(action.mediaKey) ??
-      localTitlesByActionKey.get(action.mediaKey) ??
-      null,
+    title: titleByActionKey.get(action.mediaKey) ?? null,
   }));
 }
 
-function localTitleIdsFromActionKeys(actionKeys: string[]): string[] {
-  return [
-    ...new Set(
-      actionKeys
-        .map(localTitleIdFromActionKey)
-        .filter((id): id is string => Boolean(id)),
+async function resolveTitlesForActionKeys(
+  supabase: SupabaseClient<Database>,
+  env: AppEnv,
+  actionKeys: string[],
+): Promise<Map<string, SelectionTitleDto>> {
+  const uniqueActionKeys = [...new Set(actionKeys)];
+  if (uniqueActionKeys.length === 0) {
+    return new Map();
+  }
+
+  const [remoteTitles, localTitles, externalLocalTitles] = await Promise.all([
+    resolveMediaKeys(env, uniqueActionKeys),
+    getTitlesByIds(supabase, localTitleIdsFromActionKeys(uniqueActionKeys)),
+    getTitlesByExternalRefs(
+      supabase,
+      externalTitleRefsFromActionKeys(uniqueActionKeys),
     ),
-  ];
+  ]);
+  const localTitlesById = new Map(localTitles.map((title) => [title.id, title]));
+  const localTitlesByExternalRef = new Map(
+    externalLocalTitles
+      .map((title) => [externalRefKeyFromTitle(title), title] as const)
+      .filter((entry): entry is readonly [string, TitleDto] =>
+        Boolean(entry[0]),
+      ),
+  );
+  const titleByActionKey = new Map<string, SelectionTitleDto>();
+
+  for (const actionKey of uniqueActionKeys) {
+    const localId = localTitleIdFromActionKey(actionKey);
+    const localTitle = localId ? localTitlesById.get(localId) : undefined;
+    const externalLocalTitle = localTitlesByExternalRef.get(
+      externalRefKeyFromActionKey(actionKey),
+    );
+    const remoteTitle = remoteTitles.get(actionKey) ?? undefined;
+    const title = localTitle ?? externalLocalTitle ?? remoteTitle;
+
+    if (title) {
+      titleByActionKey.set(actionKey, title);
+    }
+  }
+
+  return titleByActionKey;
+}
+
+function localTitleIdsFromActionKeys(actionKeys: string[]): string[] {
+  return uniqueStrings(
+    actionKeys
+      .map(localTitleIdFromActionKey)
+      .filter((id): id is string => Boolean(id)),
+  );
 }
 
 function localTitleIdFromActionKey(actionKey: string): string | null {
@@ -368,6 +401,104 @@ function localTitleIdFromActionKey(actionKey: string): string | null {
   }
 
   return actionKey;
+}
+
+function externalTitleRefsFromActionKeys(
+  actionKeys: string[],
+): ExternalTitleRef[] {
+  const refs: ExternalTitleRef[] = [];
+
+  for (const actionKey of actionKeys) {
+    const parsed = parseMediaKey(actionKey);
+    if (!parsed || parsed.source === 'local') {
+      continue;
+    }
+
+    refs.push({
+      source: parsed.source,
+      type: parsed.type,
+      externalId: parsed.externalId,
+    });
+  }
+
+  return refs;
+}
+
+function externalRefKeyFromActionKey(actionKey: string): string {
+  const parsed = parseMediaKey(actionKey);
+  if (!parsed || parsed.source === 'local') {
+    return '';
+  }
+
+  return externalRefKey({
+    source: parsed.source,
+    type: parsed.type,
+    externalId: parsed.externalId,
+  });
+}
+
+function externalRefKeyFromTitle(title: TitleDto): string {
+  if (!title.externalSource || !title.externalId) {
+    return '';
+  }
+
+  return externalRefKey({
+    source: title.externalSource,
+    type: title.type,
+    externalId: title.externalId,
+  });
+}
+
+function externalRefKey(ref: ExternalTitleRef): string {
+  return `${ref.source}:${ref.type}:${ref.externalId}`;
+}
+
+function actionIdentityKeys(
+  actionKey: string,
+  title?: SelectionTitleDto,
+): string[] {
+  const keys = [actionKey];
+  if (!title) {
+    return keys;
+  }
+
+  keys.push(title.id);
+
+  const localKey = localMediaKeyForTitle(title);
+  if (localKey) {
+    keys.push(localKey);
+  }
+
+  const externalKey = externalMediaKeyForTitle(title);
+  if (externalKey) {
+    keys.push(externalKey);
+  }
+
+  return uniqueStrings(keys);
+}
+
+function localMediaKeyForTitle(title: SelectionTitleDto): string | null {
+  if (!('createdAt' in title)) {
+    return null;
+  }
+
+  return `local:${mediaKeyTypeForTitle(title)}:${title.id}`;
+}
+
+function externalMediaKeyForTitle(title: SelectionTitleDto): string | null {
+  if (!title.externalSource || !title.externalId || title.externalSource === 'local') {
+    return null;
+  }
+
+  return `${title.externalSource}:${mediaKeyTypeForTitle(title)}:${title.externalId}`;
+}
+
+function mediaKeyTypeForTitle(title: SelectionTitleDto): 'movie' | 'tv' | 'anime' {
+  return title.type === 'series' ? 'tv' : title.type;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))];
 }
 
 export async function deleteTitleAction(
@@ -402,14 +533,15 @@ export async function clearTitleActions(
 
 export async function getSelections(
   supabase: SupabaseClient<Database>,
+  env: AppEnv,
   userId: string,
 ): Promise<SelectionsDto> {
   const actions = await getUserActions(supabase, userId);
-  const titles = await getTitlesByIds(
+  const titleByActionKey = await resolveTitlesForActionKeys(
     supabase,
+    env,
     actions.map((action) => action.title_id),
   );
-  const titleById = new Map(titles.map((title) => [title.id, title]));
 
   const selections: SelectionsDto = {
     liked: [],
@@ -426,7 +558,7 @@ export async function getSelections(
   };
 
   for (const action of actions) {
-    const title = titleById.get(action.title_id);
+    const title = titleByActionKey.get(action.title_id);
     if (!title) {
       continue;
     }
@@ -466,11 +598,11 @@ export async function getShareableSelections(
     (action) => action.action === 'liked' || action.action === 'to_watch',
   );
   const actionKeys = actions.map((action) => action.title_id);
-  const [resolvedTitles, localTitles] = await Promise.all([
-    resolveMediaKeys(env, actionKeys),
-    getTitlesByIds(supabase, actionKeys),
-  ]);
-  const localTitleById = new Map(localTitles.map((title) => [title.id, title]));
+  const titleByActionKey = await resolveTitlesForActionKeys(
+    supabase,
+    env,
+    actionKeys,
+  );
 
   const selections: ShareableSelectionsDto = {
     liked: [],
@@ -483,10 +615,7 @@ export async function getShareableSelections(
   };
 
   for (const action of actions) {
-    const title =
-      resolvedTitles.get(action.title_id) ??
-      localTitleById.get(action.title_id) ??
-      null;
+    const title = titleByActionKey.get(action.title_id) ?? null;
 
     if (!title) {
       continue;
@@ -510,6 +639,7 @@ export async function getShareableSelections(
 
 export async function getDiscoverTitles(
   supabase: SupabaseClient<Database>,
+  env: AppEnv,
   userId: string,
   input: { type?: TitleType; limit: number; offset: number },
 ): Promise<{ items: TitleDto[]; count: number }> {
@@ -517,9 +647,21 @@ export async function getDiscoverTitles(
     getUserActions(supabase, userId),
     listAllTitles(supabase, input.type),
   ]);
+  const titleByActionKey = await resolveTitlesForActionKeys(
+    supabase,
+    env,
+    actions.map((action) => action.title_id),
+  );
+  const selectedKeys = new Set(
+    actions.flatMap((action) =>
+      actionIdentityKeys(action.title_id, titleByActionKey.get(action.title_id)),
+    ),
+  );
 
-  const selectedIds = new Set(actions.map((action) => action.title_id));
-  const available = titles.filter((title) => !selectedIds.has(title.id));
+  const available = titles.filter(
+    (title) =>
+      actionIdentityKeys(title.id, title).every((key) => !selectedKeys.has(key)),
+  );
 
   return {
     items: available.slice(input.offset, input.offset + input.limit),
@@ -529,18 +671,19 @@ export async function getDiscoverTitles(
 
 export async function getUserRecommendations(
   supabase: SupabaseClient<Database>,
+  env: AppEnv,
   userId: string,
   input: { limit: number; type?: TitleType },
 ): Promise<{ items: RecommendationDto[] }> {
   const actions = await getUserActions(supabase, userId);
-  const actionTitles = await getTitlesByIds(
+  const titleByActionKey = await resolveTitlesForActionKeys(
     supabase,
+    env,
     actions.map((action) => action.title_id),
   );
-  const titleById = new Map(actionTitles.map((title) => [title.id, title]));
   const actionContexts = actions
     .map((action) => {
-      const title = titleById.get(action.title_id);
+      const title = titleByActionKey.get(action.title_id);
       return title ? { action: action.action, title } : null;
     })
     .filter((context): context is NonNullable<typeof context> =>
@@ -548,9 +691,14 @@ export async function getUserRecommendations(
     );
 
   const allTitles = await listAllTitles(supabase, input.type);
-  const selectedIds = new Set(actions.map((action) => action.title_id));
+  const selectedKeys = new Set(
+    actions.flatMap((action) =>
+      actionIdentityKeys(action.title_id, titleByActionKey.get(action.title_id)),
+    ),
+  );
   const availableTitles = allTitles.filter(
-    (title) => !selectedIds.has(title.id),
+    (title) =>
+      actionIdentityKeys(title.id, title).every((key) => !selectedKeys.has(key)),
   );
 
   return {
@@ -613,11 +761,12 @@ export async function ensureProfile(
 
 export async function getProfileWithStats(
   supabase: SupabaseClient<Database>,
+  env: AppEnv,
   user: AuthenticatedUser,
 ): Promise<ProfileWithStatsDto> {
   const [profile, selections] = await Promise.all([
     ensureProfile(supabase, user),
-    getSelections(supabase, user.id),
+    getSelections(supabase, env, user.id),
   ]);
 
   return {
