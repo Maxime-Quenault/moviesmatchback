@@ -31,12 +31,6 @@ export interface ListTitlesInput {
   offset: number;
 }
 
-export interface ExternalTitleRef {
-  source: string;
-  type: TitleType;
-  externalId: string;
-}
-
 export function mapTitle(
   row: TitleViewRow,
   seenPercentage: number | null = null,
@@ -182,61 +176,6 @@ export async function getTitlesByIds(
   const titles = await attachSeenPercentages(supabase, (data ?? []).map(mapTitle));
   const byId = new Map(titles.map((title) => [title.id, title]));
   return ids.map((id) => byId.get(id)).filter((title): title is TitleDto => Boolean(title));
-}
-
-export async function getTitlesByExternalRefs(
-  supabase: SupabaseClient<Database>,
-  refs: ExternalTitleRef[],
-): Promise<TitleDto[]> {
-  const uniqueRefs = dedupeExternalRefs(refs);
-  if (uniqueRefs.length === 0) {
-    return [];
-  }
-
-  const rows: TitleViewRow[] = [];
-  for (const ref of uniqueRefs) {
-    const { data, error } = await supabase
-      .from('titles_with_genres')
-      .select('*')
-      .eq('external_source', ref.source)
-      .eq('type', ref.type)
-      .eq('external_id', ref.externalId)
-      .limit(1);
-
-    if (error) {
-      throwDatabaseError(error, 'Unable to load titles by external references');
-    }
-
-    const row = data?.[0];
-    if (row) {
-      rows.push(row);
-    }
-  }
-
-  return attachSeenPercentages(supabase, rows.map(mapTitle));
-}
-
-function dedupeExternalRefs(refs: ExternalTitleRef[]): ExternalTitleRef[] {
-  const seen = new Set<string>();
-  const uniqueRefs: ExternalTitleRef[] = [];
-
-  for (const ref of refs) {
-    const source = ref.source.trim();
-    const externalId = ref.externalId.trim();
-    if (!source || !externalId) {
-      continue;
-    }
-
-    const key = `${source}:${ref.type}:${externalId}`;
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    uniqueRefs.push({ source, type: ref.type, externalId });
-  }
-
-  return uniqueRefs;
 }
 
 async function attachSeenPercentages(

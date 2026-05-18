@@ -3,7 +3,7 @@ import type { TitleDto } from './title.service.js';
 
 export interface TitleActionContext {
   action: UserTitleAction;
-  title: Pick<TitleDto, 'genres'>;
+  title: TitleDto;
 }
 
 export interface RecommendationDto {

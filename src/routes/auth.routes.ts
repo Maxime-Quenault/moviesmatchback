@@ -109,6 +109,6 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.get('/me', { preHandler: app.requireAuth }, async (request) => {
     const supabase = requireSupabase(app);
 
-    return getProfileWithStats(supabase, app.config, currentUser(request));
+    return getProfileWithStats(supabase, currentUser(request));
   });
 };

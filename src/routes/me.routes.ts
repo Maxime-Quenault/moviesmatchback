@@ -152,7 +152,7 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const user = currentUser(request);
     const supabase = requireSupabase(app);
 
-    return getProfileWithStats(supabase, app.config, user);
+    return getProfileWithStats(supabase, user);
   });
 
   app.put('/profile', async (request) => {
@@ -203,7 +203,7 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const user = currentUser(request);
     const supabase = requireSupabase(app);
 
-    return getSelections(supabase, app.config, user.id);
+    return getSelections(supabase, user.id);
   });
 
   app.delete('/selections', async (request) => {
@@ -259,7 +259,7 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const query = discoverQuerySchema.parse(request.query);
     const supabase = requireSupabase(app);
 
-    return getDiscoverTitles(supabase, app.config, user.id, query);
+    return getDiscoverTitles(supabase, user.id, query);
   });
 
   app.get('/recommendations', async (request) => {
@@ -267,7 +267,7 @@ export const meRoutes: FastifyPluginAsync = async (app) => {
     const query = recommendationsQuerySchema.parse(request.query);
     const supabase = requireSupabase(app);
 
-    return getUserRecommendations(supabase, app.config, user.id, query);
+    return getUserRecommendations(supabase, user.id, query);
   });
 
   app.put('/titles/:titleId/action', async (request) => {
