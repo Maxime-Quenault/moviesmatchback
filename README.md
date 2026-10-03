@@ -25,6 +25,8 @@ Ce service applique la strategie suivante :
 
 ## Installation
 
+Node.js 20.19+ ou 22.12+ est requis pour les outils de verification.
+
 ```bash
 npm install
 cp .env.example .env
@@ -66,13 +68,58 @@ Pour un projet Supabase lie avec la CLI:
 supabase db push
 ```
 
-Sinon, appliquer les deux fichiers SQL dans l'ordre depuis l'editeur SQL
+Sinon, appliquer les fichiers SQL dans l'ordre depuis l'editeur SQL
 Supabase:
 
 1. `20260510143000_initial_schema.sql`
 2. `20260510144000_seed_initial_catalog.sql`
+3. `20261003100000_media_sync_tombstones.sql`
 
-Le seed reprend les 8 titres presents dans `moviesmatchapp/lib/services/movie_service.dart`.
+Le seed fournit les 17 genres disponibles. Le catalogue de l'application est
+resolu depuis TMDB/Jikan.
+
+La troisieme migration doit preceder le deploiement du nouveau backend : elle
+ajoute `deleted_at`, les recus de mutations et deux fonctions RPC atomiques.
+Les suppressions conservent un marqueur pour bloquer les anciens choix envoyes
+par un autre appareil. Les retries avec le meme `mutationId` sont sans effet.
+Seul le backend service_role peut modifier ces lignes; les lectures restent
+limitees au proprietaire par RLS.
+
+## Verification email et recuperation du compte
+
+L'inscription cree un utilisateur non confirme, initialise son profil puis
+envoie un code OTP. Elle retourne `{ "email": "...", "confirmationRequired": true }`
+sans session. Si le profil ou l'envoi echoue, le nouveau compte est supprime
+pour permettre une nouvelle tentative. Un echec de nettoyage est remonte.
+Les comptes historiques deja confirmes restent utilisables.
+
+Dans Supabase Auth, activer **Confirm email**, configurer un service SMTP pour
+la production et remplacer les templates **Confirm Signup** et **Magic Link**
+par `supabase/templates/magic_link.html`, ainsi que **Reset Password**
+par `supabase/templates/recovery.html`.
+Ces emails affichent `{{ .Token }}` pour saisir le code dans Flutter sans lien
+profond. Les demandes de renvoi utilisent `shouldCreateUser: false`.
+Reference : [templates email Supabase](https://supabase.com/docs/guides/auth/auth-email-templates).
+
+Endpoints ajoutes :
+
+- `POST /v1/auth/verify-email` : `{ email, token }`, retourne une session.
+- `POST /v1/auth/resend-email` : `{ email }`, reponse generique sans enumeration.
+- `POST /v1/auth/forgot-password` : `{ email }`, meme reponse generique.
+- `POST /v1/auth/reset-password` : `{ email, token, password }`, valide un code
+  de recuperation puis invalide les refresh tokens des sessions existantes.
+- `POST /v1/auth/delete-account` : session Bearer et `{ password }`, reauthentifie,
+  supprime les avatars, puis le compte et les donnees liees par cascade.
+
+Les routes email/code ont une limite de 5 requetes par IP et par route sur
+15 minutes. Les comptes anonymes et non confirmes sont refuses. La deconnexion
+ne revoque que la session courante pour conserver les autres appareils connectes.
+
+Le script destructif `supabase/manual/reset_app_schema.sql` est reserve aux
+reinitialisations manuelles. Il est exclu des migrations pour que `supabase db push`
+ne supprime pas les donnees applicatives. Si l'ancienne migration
+`20260515094500_drop_all_app_objects.sql` a deja ete executee, verifier l'etat
+du schema et l'historique des migrations avant toute restauration.
 
 ## Correspondance avec l'app Flutter
 
@@ -109,6 +156,10 @@ Public:
 - `GET /v1/community/profiles/:profileId`
 
 Authentifies avec `Authorization: Bearer <supabase_access_token>`:
+
+Les tokens de comptes anonymes Supabase sont refuses. L'application exige
+un compte cree et une session valide; les endpoints publics restent accessibles
+pour le chargement des genres et du catalogue.
 
 - `GET /v1/auth/me`
 - `POST /v1/auth/logout`
@@ -219,6 +270,37 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+Les deux depots ont chacun une workflow GitHub Actions. Le backend lance en
+plus une instance Supabase locale isolee, applique les migrations et verifie
+RLS, suppressions persistantes, verification d'email, recuperation du mot de
+passe et suppression du compte. Les emails des tests vont dans Inbucket local.
+
+Pour lancer ce parcours localement (Docker et CLI Supabase requis) :
+
+```bash
+supabase start
+supabase db reset --local
+psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -f tests/database/media-sync.sql
+# Charger API_URL, ANON_KEY et SERVICE_ROLE_KEY depuis supabase status -o env
+# dans les variables SUPABASE_* correspondantes, sans utiliser une base distante.
+RUN_SUPABASE_INTEGRATION=1 npx vitest run tests/integration/account-sync.test.ts
+supabase stop --no-backup
+```
+
+Le test d'integration refuse toute URL non locale. Il est ignore lors de
+`npm test` tant que `RUN_SUPABASE_INTEGRATION` n'est pas active.
+
+Le protocole `/v1/me/media-actions/sync` accepte aussi les suppressions :
+
+```json
+{"items":[{"mediaKey":"tmdb:movie:42","deleted":true,"mutationId":"30000000-0000-0000-0000-000000000001","updatedAt":"2026-10-03T08:00:00Z"}]}
+```
+
+Un ajout utilise `action` au lieu de `deleted`. Conserver le meme `mutationId`
+pour une nouvelle tentative du meme changement. La reponse contient les actions
+et les marqueurs de suppression (`deletedAt`), pour reconstruire le cache.
+Les clients ne doivent plus renvoyer tous les choix deja synchronises.
 
 ## Deploiement Vercel
 

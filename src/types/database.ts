@@ -82,6 +82,7 @@ export interface Database {
           user_id: string;
           title_id: string;
           action: UserTitleAction;
+          deleted_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -173,7 +174,10 @@ export interface Database {
         Relationships: [];
       };
     };
-    Functions: Record<string, never>;
+    Functions: {
+      apply_media_mutations: { Args: { p_user_id: string; p_items: Json }; Returns: undefined };
+      clear_media_actions: { Args: { p_user_id: string }; Returns: undefined };
+    };
     Enums: {
       title_type: TitleType;
       user_title_action: UserTitleAction;

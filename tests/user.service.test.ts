@@ -58,6 +58,10 @@ class FakeQuery {
     this.rows = this.rows.slice(0, size);
     return this;
   }
+  range(start: number, end: number) {
+    this.rows = this.rows.slice(start, end + 1);
+    return this;
+  }
 }
 
 function fakeSupabase(tables: Partial<Record<TableName, Row[]>>) {

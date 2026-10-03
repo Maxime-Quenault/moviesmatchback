@@ -1,0 +1,49 @@
+name: Backend checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev
+  supabase-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - run: npm ci
+      - run: supabase start
+      - run: supabase db reset --local
+      - name: Verify migrations, RLS and tombstones
+        run: psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -f tests/database/media-sync.sql
+      - name: Run account and synchronization integration tests
+        shell: bash
+        run: |
+          eval "$(supabase status -o env)"
+          echo "::add-mask::$ANON_KEY"
+          echo "::add-mask::$SERVICE_ROLE_KEY"
+          export SUPABASE_URL="$API_URL"
+          export SUPABASE_API_URL="$API_URL"
+          export SUPABASE_ANON_KEY="$ANON_KEY"
+          export SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY"
+          export RUN_SUPABASE_INTEGRATION=1 NODE_ENV=test LOG_LEVEL=silent
+          npx vitest run tests/integration/account-sync.test.ts
+      - if: always()
+        run: supabase stop --no-backup

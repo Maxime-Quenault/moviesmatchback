@@ -83,9 +83,11 @@ const syncMediaActionsBodySchema = z.object({
     .array(
       z.object({
         mediaKey: z.string().trim().min(1).max(160),
-        action: actionSchema,
-        updatedAt: z.string().trim().min(1).optional(),
-      }),
+        action: actionSchema.optional(),
+        deleted: z.boolean().optional(),
+        mutationId: z.string().uuid().optional(),
+        updatedAt: z.string().datetime({ offset: true }).optional(),
+      }).refine((item) => item.deleted === true || item.action !== undefined, 'Action requise'),
     )
     .max(500)
     .default([]),

@@ -28,7 +28,7 @@ export const authPlugin = fp(async (app) => {
     const supabase = requireSupabase(app);
     const { data, error } = await supabase.auth.getUser(token);
 
-    if (error || !data.user) {
+    if (error || !data.user || data.user.is_anonymous || !data.user.email_confirmed_at) {
       throw unauthorized('Invalid or expired authentication token');
     }
 
@@ -48,7 +48,7 @@ export const authPlugin = fp(async (app) => {
     const supabase = requireSupabase(app);
     const { data, error } = await supabase.auth.getUser(token);
 
-    if (error || !data.user) {
+    if (error || !data.user || data.user.is_anonymous || !data.user.email_confirmed_at) {
       throw unauthorized('Invalid or expired authentication token');
     }
 

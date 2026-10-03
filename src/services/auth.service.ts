@@ -1,6 +1,6 @@
 import type { Session, SupabaseClient, User } from '@supabase/supabase-js';
 
-import { badRequest, conflict, unauthorized } from '../lib/api-error.js';
+import { ApiError, badRequest, conflict, unauthorized, upstreamError } from '../lib/api-error.js';
 import { throwDatabaseError } from '../lib/supabase-error.js';
 import type { AuthenticatedUser, Database } from '../types/database.js';
 import { normalizePreferencesInput } from './preference.service.js';
@@ -71,7 +71,6 @@ function mapAuthError(error: { message: string; status?: number }): never {
   const message = error.message.toLowerCase();
 
   if (
-    error.status === 422 ||
     message.includes('already') ||
     message.includes('registered') ||
     message.includes('exists')
@@ -80,7 +79,7 @@ function mapAuthError(error: { message: string; status?: number }): never {
   }
 
   if (
-    error.status === 400 ||
+    error.status === 400 || error.status === 422 ||
     message.includes('password') ||
     message.includes('email')
   ) {
@@ -105,7 +104,7 @@ async function upsertProfileFromAuth(
   const preferences = await normalizePreferencesInput(supabase, input, {
     enforceMinimumGenres: true,
   });
-  const fallbackName = user.email?.split('@')[0] ?? 'Compte local';
+  const fallbackName = user.email?.split('@')[0] ?? 'Utilisateur';
   const profileInput: Database['public']['Tables']['profiles']['Insert'] = {
     id: user.id,
     display_name: input.displayName?.trim() || fallbackName,
@@ -137,6 +136,9 @@ async function buildAuthResponse(
   session: Session,
   profileOverride?: ProfileDto,
 ): Promise<AuthResponseDto> {
+  if (session.user.is_anonymous || !session.user.email_confirmed_at) {
+    throw new ApiError(403, 'EMAIL_NOT_VERIFIED', 'Verifie ton adresse email pour te connecter.');
+  }
   const user = toAuthenticatedUser(session.user);
   const profile = profileOverride ?? (await ensureProfile(supabase, user));
 
@@ -154,7 +156,7 @@ export async function signUpWithPassword(
   supabase: SupabaseClient<Database>,
   supabaseAuth: SupabaseClient<Database>,
   input: AuthPayload,
-): Promise<AuthResponseDto> {
+): Promise<{ email: string; confirmationRequired: true }> {
   const email = normalizeEmail(input.email);
   await normalizePreferencesInput(supabase, input, {
     enforceMinimumGenres: true,
@@ -164,7 +166,7 @@ export async function signUpWithPassword(
     await supabase.auth.admin.createUser({
       email,
       password: input.password,
-      email_confirm: true,
+      email_confirm: false,
       user_metadata: {
         display_name: input.displayName?.trim() || undefined,
         username: input.username?.trim() || undefined,
@@ -179,29 +181,23 @@ export async function signUpWithPassword(
     throw badRequest('Unable to create account');
   }
 
-  const profile = await upsertProfileFromAuth(
-    supabase,
-    {
-      id: created.user.id,
-      email: created.user.email ?? email,
-    },
-    input,
-  );
-
-  const { data, error } = await supabaseAuth.auth.signInWithPassword({
-    email,
-    password: input.password,
-  });
-
-  if (error) {
-    mapAuthError(error);
+  try {
+    await upsertProfileFromAuth(supabase, {
+      id: created.user.id, email: created.user.email ?? email,
+    }, input);
+    // Existing users only: OTP must never create a profile-free account.
+    const { error } = await supabaseAuth.auth.signInWithOtp({
+      email, options: { shouldCreateUser: false },
+    });
+    if (error) throw upstreamError('Impossible d envoyer le code de verification');
+  } catch (error) {
+    const { error: rollbackError } = await supabase.auth.admin.deleteUser(created.user.id);
+    if (rollbackError) {
+      throw upstreamError('Inscription interrompue; nettoyage du compte impossible', rollbackError);
+    }
+    throw error;
   }
-
-  if (!data.session) {
-    throw unauthorized('Unable to create a session for this account');
-  }
-
-  return buildAuthResponse(supabase, data.session, profile);
+  return { email, confirmationRequired: true };
 }
 
 export async function signInWithPassword(
@@ -219,6 +215,9 @@ export async function signInWithPassword(
   });
 
   if (error) {
+    if (error.code === 'email_not_confirmed') {
+      throw new ApiError(403, 'EMAIL_NOT_VERIFIED', 'Verifie ton adresse email pour te connecter.');
+    }
     throw unauthorized(invalidCredentialsMessage);
   }
 
@@ -249,9 +248,74 @@ export async function revokeAuthSession(
   supabase: SupabaseClient<Database>,
   accessToken: string,
 ): Promise<void> {
-  const { error } = await supabase.auth.admin.signOut(accessToken);
+  const { error } = await supabase.auth.admin.signOut(accessToken, 'local');
 
   if (error) {
     throw unauthorized('Invalid or expired authentication token');
   }
+}
+
+export async function sendVerificationCode(supabaseAuth: SupabaseClient<Database>, email: string): Promise<void> {
+  const { error } = await supabaseAuth.auth.signInWithOtp({
+    email: normalizeEmail(email), options: { shouldCreateUser: false },
+  });
+  // Do not disclose whether this address has an account.
+  if (error && error.status !== 400 && error.status !== 422) {
+    throw upstreamError('Impossible d envoyer le code de verification');
+  }
+}
+
+export async function verifyEmailCode(
+  supabase: SupabaseClient<Database>, supabaseAuth: SupabaseClient<Database>,
+  email: string, token: string,
+): Promise<AuthResponseDto> {
+  const { data, error } = await supabaseAuth.auth.verifyOtp({
+    email: normalizeEmail(email), token, type: 'email',
+  });
+  if (error || !data.session) throw unauthorized('Code invalide ou expire');
+  return buildAuthResponse(supabase, data.session);
+}
+
+export async function requestPasswordReset(supabaseAuth: SupabaseClient<Database>, email: string): Promise<void> {
+  const { error } = await supabaseAuth.auth.resetPasswordForEmail(normalizeEmail(email));
+  if (error && error.status !== 400 && error.status !== 422) {
+    throw upstreamError('Impossible d envoyer le code de recuperation');
+  }
+}
+
+export async function resetPasswordWithCode(
+  supabase: SupabaseClient<Database>, supabaseAuth: SupabaseClient<Database>,
+  input: { email: string; token: string; password: string },
+): Promise<void> {
+  const { data, error } = await supabaseAuth.auth.verifyOtp({
+    email: normalizeEmail(input.email), token: input.token, type: 'recovery',
+  });
+  if (error || !data.user || !data.session) throw unauthorized('Code invalide ou expire');
+  const { error: updateError } = await supabase.auth.admin.updateUserById(data.user.id, { password: input.password });
+  if (updateError) throw upstreamError('Impossible de modifier le mot de passe');
+  const { error: revokeError } = await supabase.auth.admin.signOut(data.session.access_token, 'global');
+  if (revokeError) throw upstreamError('Mot de passe modifie; fermeture des sessions impossible');
+}
+
+export async function deleteAccount(
+  supabase: SupabaseClient<Database>, supabaseAuth: SupabaseClient<Database>,
+  user: AuthenticatedUser, password: string, avatarBucket: string,
+): Promise<void> {
+  if (!user.email) throw unauthorized();
+  const { data, error } = await supabaseAuth.auth.signInWithPassword({ email: user.email, password });
+  if (error || data.user?.id !== user.id) throw unauthorized(invalidCredentialsMessage);
+  // Supabase will refuse deleting a user who still owns storage objects.
+  for (;;) {
+    const { data: files, error: listError } = await supabase.storage.from(avatarBucket).list(user.id, { limit: 100 });
+    if (listError) {
+      // No bucket yet is normal for users who never uploaded an avatar.
+      if (String(listError.message).toLowerCase().includes('not found')) break;
+      throw upstreamError('Impossible de supprimer les photos du compte');
+    }
+    if (!files?.length) break;
+    const { error: removeError } = await supabase.storage.from(avatarBucket).remove(files.map((file) => `${user.id}/${file.name}`));
+    if (removeError) throw upstreamError('Impossible de supprimer les photos du compte');
+  }
+  const { error: deleteError } = await supabase.auth.admin.deleteUser(user.id);
+  if (deleteError) throw upstreamError('Impossible de supprimer le compte');
 }

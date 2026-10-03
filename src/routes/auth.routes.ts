@@ -8,6 +8,11 @@ import {
   revokeAuthSession,
   signInWithPassword,
   signUpWithPassword,
+  sendVerificationCode,
+  verifyEmailCode,
+  requestPasswordReset,
+  resetPasswordWithCode,
+  deleteAccount,
 } from '../services/auth.service.js';
 import { getProfileWithStats } from '../services/user.service.js';
 import type { AuthenticatedUser } from '../types/database.js';
@@ -15,6 +20,7 @@ import type { AuthenticatedUser } from '../types/database.js';
 const passwordSchema = z
   .string()
   .min(8, 'Password must contain at least 8 characters')
+  .max(128, 'Password must contain at most 128 characters')
   .regex(/[a-z]/, 'Password must contain a lowercase letter')
   .regex(/[A-Z]/, 'Password must contain an uppercase letter')
   .regex(/[0-9]/, 'Password must contain a number');
@@ -72,7 +78,35 @@ function currentUser(request: FastifyRequest): AuthenticatedUser {
 }
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
-  app.post('/signup', async (request, reply) => {
+  const emailSchema = z.object({ email: z.string().trim().email().max(254) });
+  const codeSchema = emailSchema.extend({ token: z.string().regex(/^\d{6,10}$/) });
+  const mailLimit = { rateLimit: { max: 5, timeWindow: '15 minutes' } };
+
+  app.post('/verify-email', { config: mailLimit }, async (request) => {
+    const body = codeSchema.parse(request.body);
+    return verifyEmailCode(requireSupabase(app), requireSupabaseAuth(app), body.email, body.token);
+  });
+  app.post('/resend-email', { config: mailLimit }, async (request) => {
+    const body = emailSchema.parse(request.body);
+    await sendVerificationCode(requireSupabaseAuth(app), body.email);
+    return { ok: true };
+  });
+  app.post('/forgot-password', { config: mailLimit }, async (request) => {
+    const body = emailSchema.parse(request.body);
+    await requestPasswordReset(requireSupabaseAuth(app), body.email);
+    return { ok: true };
+  });
+  app.post('/reset-password', { config: mailLimit }, async (request) => {
+    const body = codeSchema.extend({ password: passwordSchema.max(128) }).parse(request.body);
+    await resetPasswordWithCode(requireSupabase(app), requireSupabaseAuth(app), body);
+    return { ok: true };
+  });
+  app.post('/delete-account', { preHandler: app.requireAuth, config: mailLimit }, async (request) => {
+    const body = z.object({ password: z.string().min(1).max(128) }).parse(request.body);
+    await deleteAccount(requireSupabase(app), requireSupabaseAuth(app), currentUser(request), body.password, app.config.SUPABASE_AVATAR_BUCKET);
+    return { ok: true };
+  });
+  app.post('/signup', { config: mailLimit }, async (request, reply) => {
     const body = signUpSchema.parse(request.body);
     const supabase = requireSupabase(app);
     const supabaseAuth = requireSupabaseAuth(app);
@@ -81,7 +115,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     return reply.status(201).send(response);
   });
 
-  app.post('/signin', async (request) => {
+  app.post('/signin', { config: { rateLimit: { max: 15, timeWindow: '1 minute' } } }, async (request) => {
     const body = signInSchema.parse(request.body);
     const supabase = requireSupabase(app);
     const supabaseAuth = requireSupabaseAuth(app);

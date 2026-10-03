@@ -37,8 +37,10 @@ export interface ActionDto {
 
 export interface MediaActionSyncInput {
   mediaKey: string;
-  action: UserTitleAction;
+  action?: UserTitleAction;
   updatedAt?: string;
+  deleted?: boolean;
+  mutationId?: string;
 }
 
 export interface MediaActionRefDto {
@@ -47,6 +49,7 @@ export interface MediaActionRefDto {
   action: UserTitleAction;
   createdAt: string;
   updatedAt: string;
+  deletedAt: string | null;
 }
 
 export interface ResolvedMediaActionDto extends MediaActionRefDto {
@@ -136,6 +139,7 @@ export function mapMediaAction(row: ActionRow): MediaActionRefDto {
     action: row.action,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    deletedAt: row.deleted_at ?? null,
   };
 }
 
@@ -160,18 +164,18 @@ export function mapProfile(row: ProfileRow): ProfileDto {
 export async function getUserActions(
   supabase: SupabaseClient<Database>,
   userId: string,
+  includeDeleted = false,
 ): Promise<ActionRow[]> {
-  const { data, error } = await supabase
-    .from('user_title_actions')
-    .select('*')
-    .eq('user_id', userId)
-    .order('updated_at', { ascending: false });
-
-  if (error) {
-    throwDatabaseError(error, 'Unable to load user actions');
+  const rows: ActionRow[] = [];
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await supabase.from('user_title_actions')
+      .select('*').eq('user_id', userId)
+      .order('title_id', { ascending: true }).range(offset, offset + 999);
+    if (error) throwDatabaseError(error, 'Unable to load user actions');
+    rows.push(...(data ?? []));
+    if (!data || data.length < 1000) break;
   }
-
-  return data ?? [];
+  return rows.filter((row) => includeDeleted || !row.deleted_at);
 }
 
 export async function setTitleAction(
@@ -180,25 +184,8 @@ export async function setTitleAction(
   titleId: string,
   action: UserTitleAction,
 ): Promise<ActionDto> {
-  const { data, error } = await supabase
-    .from('user_title_actions')
-    .upsert(
-      {
-        user_id: userId,
-        title_id: titleId,
-        action,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id,title_id' },
-    )
-    .select('*')
-    .single();
-
-  if (error) {
-    throwDatabaseError(error, 'Unable to save title action');
-  }
-
-  return mapAction(data);
+  const result = await setMediaAction(supabase, userId, { mediaKey: titleId, action });
+  return { id: result.id, titleId, action: result.action, createdAt: result.createdAt, updatedAt: result.updatedAt };
 }
 
 export async function listMediaActions(
@@ -212,20 +199,14 @@ export async function listMediaActions(
 export async function setMediaAction(
   supabase: SupabaseClient<Database>,
   userId: string,
-  input: Pick<MediaActionSyncInput, 'mediaKey' | 'action'>,
+  input: { mediaKey: string; action: UserTitleAction },
 ): Promise<MediaActionRefDto> {
+  await upsertMediaActionsIfNeeded(supabase, userId, [input]);
   const { data, error } = await supabase
     .from('user_title_actions')
-    .upsert(
-      {
-        user_id: userId,
-        title_id: input.mediaKey,
-        action: input.action,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id,title_id' },
-    )
     .select('*')
+    .eq('user_id', userId)
+    .eq('title_id', input.mediaKey)
     .single();
 
   if (error) {
@@ -258,7 +239,7 @@ export async function syncMediaActions(
 ): Promise<{ items: ResolvedMediaActionDto[] }> {
   await upsertMediaActionsIfNeeded(supabase, userId, items);
 
-  const actions = await listMediaActions(supabase, userId);
+  const actions = (await getUserActions(supabase, userId, true)).map(mapMediaAction);
   return {
     items: await attachResolvedMediaTitles(supabase, env, actions),
   };
@@ -273,48 +254,13 @@ async function upsertMediaActionsIfNeeded(
     return;
   }
 
-  const existingRows = await getUserActions(supabase, userId);
-  const existingByKey = new Map(existingRows.map((row) => [row.title_id, row]));
-  const now = new Date().toISOString();
-  const rows = items
-    .filter((item) =>
-      shouldUpsertMediaAction(existingByKey.get(item.mediaKey), item),
-    )
-    .map((item) => ({
-      user_id: userId,
-      title_id: item.mediaKey,
-      action: item.action,
-      updated_at: item.updatedAt ?? now,
-    }));
-
-  if (rows.length === 0) {
-    return;
-  }
-
-  const { error } = await supabase
-    .from('user_title_actions')
-    .upsert(rows, { onConflict: 'user_id,title_id' });
+  const { error } = await supabase.rpc('apply_media_mutations', {
+    p_user_id: userId, p_items: items.map((item) => ({ ...item })),
+  });
 
   if (error) {
     throwDatabaseError(error, 'Unable to sync media actions');
   }
-}
-
-function shouldUpsertMediaAction(
-  existing: ActionRow | undefined,
-  input: MediaActionSyncInput,
-): boolean {
-  if (!existing || !input.updatedAt) {
-    return true;
-  }
-
-  const localUpdatedAt = Date.parse(input.updatedAt);
-  const remoteUpdatedAt = Date.parse(existing.updated_at);
-  if (!Number.isFinite(localUpdatedAt) || !Number.isFinite(remoteUpdatedAt)) {
-    return true;
-  }
-
-  return localUpdatedAt >= remoteUpdatedAt;
 }
 
 async function attachResolvedMediaTitles(
@@ -323,7 +269,7 @@ async function attachResolvedMediaTitles(
   actions: MediaActionRefDto[],
 ): Promise<ResolvedMediaActionDto[]> {
   const actionKeys = actions
-    .filter((action) => shouldResolveActionTitle(action.action))
+    .filter((action) => !action.deletedAt && shouldResolveActionTitle(action.action))
     .map((action) => action.mediaKey);
   const titlesByKey = await resolveTitlesForActionKeys(
     supabase,
@@ -333,7 +279,7 @@ async function attachResolvedMediaTitles(
 
   return actions.map((action) => ({
     ...action,
-    title: shouldResolveActionTitle(action.action)
+    title: !action.deletedAt && shouldResolveActionTitle(action.action)
       ? titlesByKey.get(action.mediaKey) ?? null
       : null,
   }));
@@ -402,25 +348,14 @@ export async function deleteTitleAction(
   userId: string,
   titleId: string,
 ): Promise<void> {
-  const { error } = await supabase
-    .from('user_title_actions')
-    .delete()
-    .eq('user_id', userId)
-    .eq('title_id', titleId);
-
-  if (error) {
-    throwDatabaseError(error, 'Unable to delete title action');
-  }
+  await upsertMediaActionsIfNeeded(supabase, userId, [{ mediaKey: titleId, deleted: true }]);
 }
 
 export async function clearTitleActions(
   supabase: SupabaseClient<Database>,
   userId: string,
 ): Promise<void> {
-  const { error } = await supabase
-    .from('user_title_actions')
-    .delete()
-    .eq('user_id', userId);
+  const { error } = await supabase.rpc('clear_media_actions', { p_user_id: userId });
 
   if (error) {
     throwDatabaseError(error, 'Unable to clear title actions');
@@ -620,7 +555,7 @@ export async function ensureProfile(
     return mapProfile(existing);
   }
 
-  const fallbackName = user.email?.split('@')[0] ?? 'Compte local';
+  const fallbackName = user.email?.split('@')[0] ?? 'Utilisateur';
   const { data, error } = await supabase
     .from('profiles')
     .insert({
